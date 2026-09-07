@@ -1,15 +1,19 @@
 bundle:
   name: nexus-retail-analytics
 
-# Auto-merge local workspace overrides if the file exists.
-# New users: cp databricks.yml.local.example databricks.yml.local
+# Merge local workspace overrides automatically.
+# New users: cp databricks.local.yml.example databricks.local.yml
 include:
   - "databricks.local.yml"
 
 # ── Variables ──────────────────────────────────────────────────────────────
-# Workspace-specific values. Set in databricks.yml.local (gitignored) —
-# see databricks.yml.local.example for the template.
-# Or pass on the CLI: --var catalog=my_catalog --var warehouse_id=abc123
+# Set in databricks.local.yml (gitignored). No defaults — bundle validate
+# will fail with a clear "required variable" message if the file is missing.
+#
+# catalog     : UC catalog to deploy all schemas into. Must already exist.
+# warehouse_id: ID of a running SQL warehouse.
+#               Find it: SQL Warehouses → <name> → Connection Details → HTTP Path
+#               (last segment after /warehouses/)
 
 variables:
   catalog:
@@ -18,8 +22,7 @@ variables:
     description: "SQL warehouse ID used by governance scripts. Find in SQL Warehouse → Connection Details."
 
 # ── Targets ────────────────────────────────────────────────────────────────
-# No workspace.host here — taken from databricks.yml.local, CLI --profile,
-# or DATABRICKS_HOST env var. databricks.yml.local is auto-merged by DABs.
+# workspace.host and profile are set in databricks.local.yml, not here.
 
 targets:
   dev:
