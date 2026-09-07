@@ -433,10 +433,10 @@ Upload `setup/02_genie_setup.py` as a Databricks workspace notebook and run it �
 The bundle has **no hardcoded workspace URL or IDs**. Create your local config file from the provided template:
 
 ```bash
-cp databricks.yml.local.example databricks.yml.local
+cp databricks.local.yml.example databricks.local.yml
 ```
 
-Edit `databricks.yml.local` with your values:
+Edit `databricks.local.yml` with your values:
 
 ```yaml
 targets:
@@ -448,7 +448,7 @@ targets:
       warehouse_id: your_warehouse_id # from SQL Warehouse → Connection Details
 ```
 
-`databricks.yml.local` is gitignored — it never gets committed. It is merged on top of `databricks.yml` automatically by the CLI.
+`databricks.local.yml` is gitignored — it never gets committed. It is merged on top of `databricks.yml` automatically by the CLI.
 
 > **Switching workspaces later?** Delete `.databricks/` (the local bundle Terraform state) before your first deploy on the new workspace. Stale state contains resource IDs from the previous workspace that don't exist in the new one:
 > ```bash
@@ -458,7 +458,7 @@ targets:
 ### Step 1 — Validate & Deploy the Bundle
 
 ```bash
-# --profile is optional if databricks.yml.local sets the host
+# --profile is optional if databricks.local.yml sets the host
 databricks bundle validate
 databricks bundle deploy -t dev
 ```
@@ -499,7 +499,7 @@ databricks pipelines start-update <pipeline_id> --full-refresh
 Update the two variables in `governance/run_governance.py` to match your workspace, then run:
 
 ```python
-WAREHOUSE  = "your_warehouse_id"   # same as databricks.yml.local
+WAREHOUSE  = "your_warehouse_id"   # same as databricks.local.yml
 OWNER_USER = "your.email@company.com"
 ```
 
@@ -518,7 +518,7 @@ Upload `setup/02_genie_setup.py` to your workspace as a notebook and run it. For
 | Symptom | Cause | Fix |
 |---|---|---|
 | `Error: resource not found` on deploy | Stale `.databricks/` state from another workspace | `rm -rf .databricks/` then redeploy |
-| `variable 'catalog' is required` | `databricks.yml.local` not created | Copy from `.example` and fill in your values |
+| `variable 'catalog' is required` | `databricks.local.yml` not created | Copy from `.example` and fill in your values |
 | `variable 'warehouse_id' is required` | Same as above | Same fix |
 | Pipeline fails at `WAITING_FOR_RESOURCES` | Code analysis error — check pipeline events | `databricks pipelines list-pipeline-events <id>` |
 | `%pip install` in notebook fails | Not applicable — silver layer uses native SDP expectations only | No action needed |

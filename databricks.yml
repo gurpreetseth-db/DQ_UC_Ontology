@@ -1,15 +1,15 @@
 bundle:
   name: nexus-retail-analytics
 
+# Auto-merge local workspace overrides if the file exists.
+# New users: cp databricks.yml.local.example databricks.yml.local
+include:
+  - "databricks.local.yml"
+
 # ── Variables ──────────────────────────────────────────────────────────────
-# Workspace-specific values. Override in databricks.yml.local (gitignored)
-# or pass on the CLI: --var catalog=my_catalog --var warehouse_id=abc123
-#
-# catalog     : UC catalog to create all schemas and tables in.
-#               Must already exist. Your username catalog is a safe choice.
-# warehouse_id: ID of a running SQL warehouse. Find it in:
-#               Workspace → SQL Warehouses → <name> → Connection Details → HTTP Path
-#               (last segment after /sql/1.0/warehouses/)
+# Workspace-specific values. Set in databricks.yml.local (gitignored) —
+# see databricks.yml.local.example for the template.
+# Or pass on the CLI: --var catalog=my_catalog --var warehouse_id=abc123
 
 variables:
   catalog:
@@ -18,13 +18,8 @@ variables:
     description: "SQL warehouse ID used by governance scripts. Find in SQL Warehouse → Connection Details."
 
 # ── Targets ────────────────────────────────────────────────────────────────
-# No workspace.host set here — the workspace is taken from:
-#   1. --profile <name>  flag passed to the CLI   (recommended)
-#   2. DATABRICKS_HOST + DATABRICKS_TOKEN env vars
-#   3. Your active profile in ~/.databrickscfg
-#
-# To set sensible defaults for your own workspace without editing this file,
-# create databricks.yml.local (see databricks.yml.local.example).
+# No workspace.host here — taken from databricks.yml.local, CLI --profile,
+# or DATABRICKS_HOST env var. databricks.yml.local is auto-merged by DABs.
 
 targets:
   dev:
@@ -40,7 +35,7 @@ resources:
     nexus_retail_pipeline:
       name: "NexusRetail Analytics Pipeline"
       catalog: ${var.catalog}
-      schema: online_retail_bronze    # default publish schema for bronze tables
+      schema: online_retail_bronze
       serverless: true
       channel: CURRENT
       continuous: false
@@ -54,7 +49,7 @@ resources:
       configuration:
         catalog: ${var.catalog}
         pipeline.env: ${bundle.target}
-      clusters: []   # serverless — no cluster config
+      clusters: []
 
   jobs:
     nexus_retail_generate_data:

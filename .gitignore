@@ -6,8 +6,8 @@
 .databricks/
 
 # Local workspace overrides (host URL, catalog, warehouse ID)
-# See databricks.yml.local.example for the template
-databricks.yml.local
+# See databricks.local.yml.example for the template
+databricks.local.yml
 
 # ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
