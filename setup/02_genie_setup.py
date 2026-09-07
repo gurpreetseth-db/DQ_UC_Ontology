@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # NexusRetail Analytics — Genie One Space Setup
 # Creates the "Online Retail" Genie domain, 3 pages, knowledge snippets,
 # and wires the metric views as data sources.
@@ -11,6 +15,7 @@
 # SDK : databricks-sdk >= 0.20
 
 # COMMAND ----------
+
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service import dashboards
 import json
@@ -142,56 +147,70 @@ Region IDs and names:
 
 Customer distribution: AMER-North 25%, EMEA-West 22%, APAC-East 20%, APAC-South 15%, others 18%
 """,
-    },
-    {
-        "title": "Metric View Query Examples",
-        "content": """
-To query metric views, use the MEASURE() function:
+    }
+]
 
--- Category revenue by month:
-SELECT `Sale Month`, `Category`, MEASURE(`Gross Revenue`) AS revenue
+
+# Optional: add the natural-language questions as UI sample questions.
+SAMPLE_QUESTIONS = [
+    "What were the top 5 categories by revenue in Q4 2025?",
+    "Show me weekly revenue trend for APAC-East in 2025",
+    "Which channel drives the highest average order value?",
+    "Compare Q4 2025 vs Q4 2024 revenue by region",
+    "Which income bracket has the highest customer lifetime value?",
+    "What is the repeat purchase rate for Platinum vs Bronze tier customers?",
+    "Which age group has the highest average order value?",
+    "Show me revenue by loyalty tier over the last 6 months",
+    "Why is the Electronics return rate elevated in Q4 2025?",
+    "Show return rate by product SKU with more than 20% return rate",
+    "Which region has the highest return rate?",
+    "How many support tickets were raised for product defects in Q4 2025?",
+]
+
+# These are the SQL examples explicitly provided in your snippets.
+EXAMPLE_QUESTION_SQLS = [
+    {
+        "question": "Show category revenue by month for 2025",
+        "sql": """
+SELECT
+  `Sale Month`,
+  `Category`,
+  MEASURE(`Gross Revenue`) AS revenue
 FROM gurpreet_sethi.online_retail_metrics.metrics_sales_kpis
 WHERE YEAR(`Sale Month`) = 2025
-GROUP BY ALL ORDER BY ALL;
-
--- Return rate by product:
-SELECT `Category`, `Faulty Batch`, MEASURE(`Return Rate`) AS return_rate
-FROM gurpreet_sethi.online_retail_metrics.metrics_product_kpis
-GROUP BY ALL ORDER BY ALL;
-
--- Revenue by loyalty tier:
-SELECT `Loyalty Tier`, `Month`, MEASURE(`Revenue`) AS revenue
-FROM gurpreet_sethi.online_retail_metrics.metrics_customer_kpis
-GROUP BY ALL ORDER BY ALL;
-
-Note: dimension names with spaces must be backtick-quoted.
+GROUP BY ALL
+ORDER BY ALL
 """,
     },
     {
-        "title": "Sample Questions This Space Answers",
-        "content": """
-Sales Performance:
-- "What were the top 5 categories by revenue in Q4 2025?"
-- "Show me weekly revenue trend for APAC-East in 2025"
-- "Which channel (web/mobile/partner) drives the highest average order value?"
-- "Compare Q4 2025 vs Q4 2024 revenue by region"
-
-Customer Analytics:
-- "Which income bracket has the highest customer lifetime value?"
-- "What is the repeat purchase rate for Platinum vs Bronze tier customers?"
-- "Which age group has the highest average order value?"
-- "Show me revenue by loyalty tier over the last 6 months"
-
-Returns & Quality:
-- "Why is the Electronics return rate elevated in Q4 2025?"
-- "Show return rate by product SKU — which products have >20% return rate?"
-- "Which region has the highest return rate?"
-- "How many support tickets were raised for product defects in Q4 2025?"
+        "question": "Show return rate by product category and faulty batch",
+        "sql": """
+SELECT
+  `Category`,
+  `Faulty Batch`,
+  MEASURE(`Return Rate`) AS return_rate
+FROM gurpreet_sethi.online_retail_metrics.metrics_product_kpis
+GROUP BY ALL
+ORDER BY ALL
+""",
+    },
+    {
+        "question": "Show revenue by loyalty tier",
+        "sql": """
+SELECT
+  `Loyalty Tier`,
+  `Month`,
+  MEASURE(`Revenue`) AS revenue
+FROM gurpreet_sethi.online_retail_metrics.metrics_customer_kpis
+GROUP BY ALL
+ORDER BY ALL
 """,
     },
 ]
 
+
 # COMMAND ----------
+
 # NOTE: The Genie Spaces API endpoint varies by workspace.
 # If the SDK doesn't have a direct Genie Space creation method,
 # use the REST API directly.
@@ -200,14 +219,101 @@ Returns & Quality:
 print("Creating NexusRetail Genie Space...")
 print(f"Data sources: {len(DATA_SOURCES)} tables/views")
 print(f"Knowledge snippets: {len(KNOWLEDGE_SNIPPETS)}")
+print(f"Sample Questions: {len(SAMPLE_QUESTIONS)}")
+print(f"Example SQLs: {len(EXAMPLE_QUESTION_SQLS)}")
 
 # COMMAND ----------
-# Use REST API to create the Genie space
-import requests
+
+import json
+from databricks.sdk import WorkspaceClient
+
+w = WorkspaceClient()
+
+# Get the first available SQL warehouse
+warehouses = w.warehouses.list()
+warehouse_id = None
+for wh in warehouses:
+    if wh.state and wh.state.value in ("RUNNING", "STARTING"):
+        warehouse_id = wh.id
+        break
+    if wh.id:
+        warehouse_id = wh.id  # fallback to any warehouse
+
+if not warehouse_id:
+    print("WARNING: No SQL warehouse found. Please create one and re-run this cell.")
+else:
+    table_identifiers = DATA_SOURCES
+    
+    # Check if a Genie Space with this title already exists
+    existing_spaces = w.api_client.do("GET", "/api/2.0/genie/spaces")
+    genie_space_id = None
+    for space in existing_spaces.get("spaces", []):
+        if space.get("title") == SPACE_TITLE:
+            genie_space_id = space.get("space_id")
+            print(f"Genie Space '{SPACE_TITLE}' already exists (ID: {genie_space_id})")
+            break
+
+    if not genie_space_id:
+        print(f"Creating Geneie Space '{SPACE_TITLE}'...")
+        serialized = json.dumps({
+            "version": 2,
+            "data_sources": {"tables": [{"identifier": t} for t in sorted(table_identifiers)]}
+        })
+        try:
+            resp = w.api_client.do("POST", "/api/2.0/genie/spaces", body={
+                "title": SPACE_TITLE,
+                "description": SPACE_DESCRIPTION,
+                "warehouse_id": warehouse_id,
+                "serialized_space": serialized,
+            })
+            genie_space_id = resp.get("space_id")
+            print(f"Genie Space created (ID: {genie_space_id})")
+        except Exception as e:
+            print(f"Error creating Genie Space: {e}")
+
+print("=================================================================")
+print("Add Instructions and Sample Questions next to Complete the Setup")
+print("Complete Option A (UI) first, then note your Genie Space ID for Module 07.")
+
+# COMMAND ----------
+
+import requests# Add knowledge snippets (if space was created)
+
 
 def get_token():
     # In a Databricks notebook, the token is available via dbutils
     return dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+
+
+HOST    = spark.conf.get("spark.databricks.workspaceUrl", "e2-demo-field-eng.cloud.databricks.com")
+TOKEN   = get_token()
+HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json"}
+
+BASE_URL = f"https://{HOST}/api/2.0"
+if genie_space_id:
+    for snip in KNOWLEDGE_SNIPPETS:
+        snippet_resp = requests.post(
+            f"{BASE_URL}/genie/spaces/{genie_space_id}/knowledge-snippets",
+            headers=HEADERS,
+            json={"title": snip["title"], "content": snip["content"].strip()}
+        )
+        status = "✓" if snippet_resp.status_code in (200,201) else "⚠"
+        print(f"{BASE_URL}/genie/spaces/{genie_space_id}/knowledge-snippets")
+        print(f"  {status} Snippet: {snip['title']}")
+
+# COMMAND ----------
+
+import hashlib
+import json
+import os
+import requests
+import requests# Add knowledge snippets (if space was created)
+
+
+def get_token():
+    # In a Databricks notebook, the token is available via dbutils
+    return dbutils.notebook.entry_point.getDbutils().notebook().getContext().apiToken().get()
+
 
 HOST    = spark.conf.get("spark.databricks.workspaceUrl", "e2-demo-field-eng.cloud.databricks.com")
 TOKEN   = get_token()
@@ -215,86 +321,127 @@ HEADERS = {"Authorization": f"Bearer {TOKEN}", "Content-Type": "application/json
 
 BASE_URL = f"https://{HOST}/api/2.0"
 
-# Create Genie space
-space_payload = {
-    "display_name": SPACE_TITLE,
-    "description": SPACE_DESCRIPTION.strip(),
-    "warehouse_id": "9d8a677b3c55b8a7",  # dqx-studio-sql-warehouse
-    "table_identifiers": DATA_SOURCES,
+
+HEADERS = {
+    "Authorization": f"Bearer {TOKEN}",
+    "Content-Type": "application/json",
 }
 
-resp = requests.post(
-    f"{BASE_URL}/genie/spaces",
-    headers=HEADERS,
-    json=space_payload
+def stable_id(*values: str) -> str:
+    """Generate a deterministic 32-character lowercase hex ID."""
+    value = "\n".join(values)
+    return hashlib.md5(value.encode("utf-8")).hexdigest()
+
+
+
+# 1. Retrieve the existing serialized Genie Space.
+get_url = (
+    f"https://{HOST}/api/2.0/genie/spaces/{genie_space_id}"
+    "?include_serialized_space=true"
 )
-if resp.status_code in (200, 201):
-    space = resp.json()
-    space_id = space.get("space_id") or space.get("id")
-    print(f"✓ Genie space created: {SPACE_TITLE}")
-    print(f"  Space ID: {space_id}")
+
+response = requests.get(get_url, headers=HEADERS)
+response.raise_for_status()
+
+space = response.json()
+serialized_space = json.loads(space["serialized_space"])
+
+instructions = serialized_space.setdefault("instructions", {})
+config = serialized_space.setdefault("config", {})
+
+# 2. Add/update the knowledge snippets as one text instruction.
+knowledge_content = [
+    f"## {snippet['title']}\n{snippet['content'].strip()}"
+    for snippet in KNOWLEDGE_SNIPPETS
+]
+
+knowledge_instruction_id = stable_id("knowledge-snippets", genie_space_id)
+
+text_instructions = instructions.setdefault("text_instructions", [])
+
+existing_instruction = next(
+    (
+        item
+        for item in text_instructions
+        if item.get("id") == knowledge_instruction_id
+    ),
+    None,
+)
+
+knowledge_instruction = {
+    "id": knowledge_instruction_id,
+    "content": knowledge_content,
+}
+
+if existing_instruction:
+    existing_instruction.update(knowledge_instruction)
 else:
-    print(f"⚠ Space creation returned {resp.status_code}: {resp.text}")
-    print("  Note: Genie Spaces API may be in preview — check workspace settings.")
-    print("  Alternatively, create the space manually in the UI with these data sources:")
-    for ds in DATA_SOURCES:
-        print(f"    - {ds}")
-    space_id = None
+    text_instructions.append(knowledge_instruction)
 
-# COMMAND ----------
-# Add knowledge snippets (if space was created)
-if space_id:
-    for snip in KNOWLEDGE_SNIPPETS:
-        snippet_resp = requests.post(
-            f"{BASE_URL}/genie/spaces/{space_id}/knowledge-snippets",
-            headers=HEADERS,
-            json={"title": snip["title"], "content": snip["content"].strip()}
-        )
-        status = "✓" if snippet_resp.status_code in (200,201) else "⚠"
-        print(f"  {status} Snippet: {snip['title']}")
+# 3. Add natural-language sample questions.
+sample_questions = config.setdefault("sample_questions", [])
 
-# COMMAND ----------
-# Print manual setup instructions as fallback
-print("""
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-GENIE ONE MANUAL SETUP GUIDE (if API not available)
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+existing_sample_text = {
+    item["question"][0]
+    for item in sample_questions
+    if item.get("question")
+}
 
-1. Navigate to: https://e2-demo-field-eng.cloud.databricks.com/genie
+for question in SAMPLE_QUESTIONS:
+    if question not in existing_sample_text:
+        sample_questions.append({
+            "id": stable_id("sample-question", question),
+            "question": [question],
+        })
 
-2. Create Space: "NexusRetail Analytics"
-   Warehouse: dqx-studio-sql-warehouse (9d8a677b3c55b8a7)
+# 4. Add question + SQL examples.
+example_sqls = instructions.setdefault("example_question_sqls", [])
 
-3. Add Data Sources (Catalog Explorer → select each table):
-""")
-for ds in DATA_SOURCES:
-    print(f"   ✦ {ds}")
+existing_examples = {
+    item["id"]: item
+    for item in example_sqls
+    if item.get("id")
+}
 
-print("""
-4. Create 3 Pages:
-   📊 "Sales Performance"
-      Data: mv_category_revenue, metrics_sales_kpis, gold_daily_revenue
-      Sample questions:
-        → What were the top 5 categories by revenue in Q4 2025?
-        → Show me weekly revenue trend for APAC-East in 2025
-        → Which channel drives the highest average order value?
+for example in EXAMPLE_QUESTION_SQLS:
+    question = example["question"].strip()
+    sql = example["sql"].strip()
 
-   👥 "Customer Analytics"
-      Data: mv_customer_demo_sales, metrics_customer_kpis, gold_customer_lifetime_value
-      Sample questions:
-        → Which income bracket has the highest CLV?
-        → Compare repeat purchase rate by loyalty tier
-        → Which age group churned most in Q3 2025?
+    example_id = stable_id("example-sql", question)
 
-   ↩️  "Returns & Quality"
-      Data: mv_regional_orders, metrics_product_kpis, gold_return_analysis
-      Sample questions:
-        → Why is the Electronics return rate elevated in Q4 2025?
-        → Which products have a return rate above 20%?
-        → Which region has the highest return rate?
+    existing_examples[example_id] = {
+        "id": example_id,
+        "question": [question],
+        "sql": [sql],
+    }
 
-5. Add Knowledge Snippets (see KNOWLEDGE_SNIPPETS list in this notebook)
-   Go to Space Settings → Knowledge → Add for each snippet title/content above.
+# Genie expects these entries to be ordered by ID.
+instructions["example_question_sqls"] = sorted(
+    existing_examples.values(),
+    key=lambda item: item["id"],
+)
 
-━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
-""")
+# 5. Write the updated serialized definition back to Genie.
+payload = {
+    "serialized_space": json.dumps(serialized_space),
+}
+
+if space.get("etag"):
+    payload["etag"] = space["etag"]
+
+patch_url = f"https://{HOST}/api/2.0/genie/spaces/{genie_space_id}"
+response = requests.patch(
+    patch_url,
+    headers=HEADERS,
+    json=payload,
+)
+response.raise_for_status()
+
+print(f"Updated Genie Space: {genie_space_id}")
+print(f"Knowledge snippets: {len(KNOWLEDGE_SNIPPETS)}")
+print(f"Sample questions: {len(config['sample_questions'])}")
+print(
+    "SQL examples: "
+    f"{len(instructions['example_question_sqls'])}"
+)
+
