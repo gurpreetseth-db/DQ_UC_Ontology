@@ -1,0 +1,22 @@
+# databricks.yml.local — YOUR workspace overrides
+# ─────────────────────────────────────────────────────────────────────────────
+# Copy this file to databricks.yml.local and fill in your values.
+# databricks.yml.local is gitignored — it never gets committed.
+#
+# DABs merges this file on top of databricks.yml automatically — no flag needed.
+# ─────────────────────────────────────────────────────────────────────────────
+
+targets:
+  dev:
+    workspace:
+      host: https://YOUR-WORKSPACE.cloud.databricks.com   # <-- change this
+    variables:
+      catalog: your_catalog_name      # must already exist in your workspace
+      warehouse_id: your_warehouse_id # SQL Warehouses → <name> → Connection Details
+
+  prod:
+    workspace:
+      host: https://YOUR-PROD-WORKSPACE.cloud.databricks.com  # optional
+    variables:
+      catalog: your_prod_catalog
+      warehouse_id: your_prod_warehouse_id

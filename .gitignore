@@ -1,17 +1,24 @@
-# Databricks bundle state
+# ── Databricks bundle state ─────────────────────────────────────────────────
+# .databricks/ contains Terraform state with workspace-specific resource IDs
+# (pipeline IDs, job IDs, etc.). It MUST NOT be committed — it would cause
+# "resource not found" errors on any workspace other than the one it was
+# deployed from. Delete this directory to force a clean deploy on a new workspace.
 .databricks/
 
-# Python
+# Local workspace overrides (host URL, catalog, warehouse ID)
+# See databricks.yml.local.example for the template
+databricks.yml.local
+
+# ── Python ───────────────────────────────────────────────────────────────────
 __pycache__/
 *.py[cod]
 *.pyo
 .venv/
 *.egg-info/
 
-# macOS
+# ── macOS ────────────────────────────────────────────────────────────────────
 .DS_Store
 
-# Secrets / env
+# ── Secrets / env ────────────────────────────────────────────────────────────
 .env
-*.local
-databricks.yml.local
+*.env.local

@@ -422,22 +422,53 @@ Upload `setup/02_genie_setup.py` as a Databricks workspace notebook and run it �
 
 ### Prerequisites
 
-- Databricks CLI ≥ v1.0.0, authenticated to `e2-demo-field-eng`
-- Profile named `e2-demo-field-eng` in `~/.databrickscfg`
-- `gurpreet_sethi` catalog with CREATE SCHEMA permission
-- SQL warehouse `9d8a677b3c55b8a7` (`dqx-studio-sql-warehouse`) running
+- Databricks CLI ≥ v1.0.0 (`databricks --version`)
+- An active CLI profile authenticated to your target workspace (`databricks auth profiles`)
+- A Unity Catalog **catalog** that already exists (your user catalog is fine)
+- A running **SQL warehouse** — find the ID in Workspace → SQL Warehouses → `<name>` → Connection Details (last path segment after `/warehouses/`)
+- `databricks-sdk` Python package installed (`pip install databricks-sdk`)
+
+### Step 0 — Configure Your Workspace
+
+The bundle has **no hardcoded workspace URL or IDs**. Create your local config file from the provided template:
+
+```bash
+cp databricks.yml.local.example databricks.yml.local
+```
+
+Edit `databricks.yml.local` with your values:
+
+```yaml
+targets:
+  dev:
+    workspace:
+      host: https://YOUR-WORKSPACE.cloud.databricks.com
+    variables:
+      catalog: your_catalog_name      # must already exist
+      warehouse_id: your_warehouse_id # from SQL Warehouse → Connection Details
+```
+
+`databricks.yml.local` is gitignored — it never gets committed. It is merged on top of `databricks.yml` automatically by the CLI.
+
+> **Switching workspaces later?** Delete `.databricks/` (the local bundle Terraform state) before your first deploy on the new workspace. Stale state contains resource IDs from the previous workspace that don't exist in the new one:
+> ```bash
+> rm -rf .databricks/
+> ```
 
 ### Step 1 — Validate & Deploy the Bundle
 
 ```bash
-databricks bundle validate --profile e2-demo-field-eng
-databricks bundle deploy -t dev --profile e2-demo-field-eng
+# --profile is optional if databricks.yml.local sets the host
+databricks bundle validate
+databricks bundle deploy -t dev
 ```
+
+The deploy creates the SDP pipeline and data generation job in your workspace. No data is written yet.
 
 ### Step 2 — Generate Raw Data (~20 min on serverless)
 
 ```bash
-databricks bundle run nexus_retail_generate_data -t dev --profile e2-demo-field-eng
+databricks bundle run nexus_retail_generate_data -t dev
 ```
 
 This runs `setup/01_generate_raw_data.py` as a serverless notebook job. It:
@@ -445,55 +476,52 @@ This runs `setup/01_generate_raw_data.py` as a serverless notebook job. It:
 2. Generates 20 Parquet tables (~15K rows total)
 3. Embeds the data quality story (NULL invoices, duplicate emails, faulty batch orders)
 
-Monitor at: `https://e2-demo-field-eng.cloud.databricks.com/#job/<job_id>`
+Monitor in the **Jobs** UI — the run URL is printed to the CLI output.
 
 ### Step 3 — Run the SDP Pipeline (~3 min on serverless)
 
 ```bash
-# Get the pipeline ID from the deployment output, then:
-PIPELINE_ID="d8de9ffb-3723-4d56-a65c-e3d183c7caf8"
-databricks pipelines start-update $PIPELINE_ID --full-refresh --profile e2-demo-field-eng
-```
-
-Or via the bundle:
-```bash
-databricks bundle run nexus_retail_pipeline -t dev --profile e2-demo-field-eng
+databricks bundle run nexus_retail_pipeline -t dev
 ```
 
 This creates all 32 tables (bronze → silver → gold) including the DQ quarantine MV.
 
+To re-run after data changes:
+```bash
+# Get pipeline ID from deployment output or the Pipelines UI, then:
+databricks pipelines start-update <pipeline_id> --full-refresh
+```
+
+> ⚠️ `--full-refresh` reprocesses all source files from scratch. Safe here since the source is static Volume Parquet files, not a live Kafka topic.
+
 ### Step 4 — Apply Governance
 
-```bash
-# Uses the databricks-sdk in the ai-dev-kit venv
-~/.ai-dev-kit/.venv/bin/python3 governance/run_governance.py
+Update the two variables in `governance/run_governance.py` to match your workspace, then run:
+
+```python
+WAREHOUSE  = "your_warehouse_id"   # same as databricks.yml.local
+OWNER_USER = "your.email@company.com"
 ```
 
-Or manually execute `governance/01_column_masks.sql`, `governance/02_tags_and_comments.sql` against the SQL warehouse.
-
-### Step 5 — Deploy Metric Views
-
 ```bash
-# Already included in run_governance.py
-# Or manually:
-~/.ai-dev-kit/.venv/bin/python3 -c "
-from databricks.sdk import WorkspaceClient
-# ... execute governance/03_metric_views.sql statements
-"
+python3 governance/run_governance.py
 ```
 
-### Step 6 — Genie One
+This applies PII column masks, UC tags, table/column comments, and creates the metrics schema with UC MVs and Metric Views.
 
-Upload `setup/02_genie_setup.py` to the workspace and run as a notebook. For manual setup, follow the guide in the notebook's printed output.
+### Step 5 — Genie One
 
-### Re-running After Changes
+Upload `setup/02_genie_setup.py` to your workspace as a notebook and run it. For manual setup, follow the guide printed at the end of the notebook.
 
-To re-ingest from scratch (e.g. after regenerating data):
-```bash
-databricks pipelines start-update $PIPELINE_ID --full-refresh --profile e2-demo-field-eng
-```
+### Troubleshooting
 
-> ⚠️ `--full-refresh` reprocesses all streaming sources from scratch. This is safe here since the source is static Volume Parquet files, not a live Kafka stream.
+| Symptom | Cause | Fix |
+|---|---|---|
+| `Error: resource not found` on deploy | Stale `.databricks/` state from another workspace | `rm -rf .databricks/` then redeploy |
+| `variable 'catalog' is required` | `databricks.yml.local` not created | Copy from `.example` and fill in your values |
+| `variable 'warehouse_id' is required` | Same as above | Same fix |
+| Pipeline fails at `WAITING_FOR_RESOURCES` | Code analysis error — check pipeline events | `databricks pipelines list-pipeline-events <id>` |
+| `%pip install` in notebook fails | Not applicable — silver layer uses native SDP expectations only | No action needed |
 
 ---
 

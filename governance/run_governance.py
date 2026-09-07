@@ -1,15 +1,35 @@
 """
 NexusRetail Governance Setup — runs all DDL statements via Databricks SDK
-Usage: ~/.ai-dev-kit/.venv/bin/python3 run_governance.py
+
+Usage:
+  python3 governance/run_governance.py
+
+Configuration (set these before running):
+  WAREHOUSE  — SQL warehouse ID (from SQL Warehouses → Connection Details)
+  CATALOG    — UC catalog name (must already exist)
+  OWNER_USER — email of the user who gets unmasked PII access
+
+The script uses your active Databricks CLI profile (or DATABRICKS_HOST +
+DATABRICKS_TOKEN env vars) — same credentials as `databricks bundle deploy`.
 """
+import os
 from databricks.sdk import WorkspaceClient
 
-PROFILE    = "e2-demo-field-eng"
-WAREHOUSE  = "9d8a677b3c55b8a7"
-CATALOG    = "gurpreet_sethi"
-OWNER_USER = "gurpreet.sethi@databricks.com"
+# ── Configure for your workspace ───────────────────────────────────────────
+WAREHOUSE  = os.environ.get("WAREHOUSE_ID",  "your_warehouse_id")   # <-- set this
+CATALOG    = os.environ.get("CATALOG",        "your_catalog_name")   # <-- set this
+OWNER_USER = os.environ.get("OWNER_USER",     "your.email@company.com")  # <-- set this
+# ───────────────────────────────────────────────────────────────────────────
+# Or pass as environment variables:
+#   WAREHOUSE_ID=abc123 CATALOG=my_catalog OWNER_USER=me@co.com python3 run_governance.py
 
-_w = WorkspaceClient(profile=PROFILE)
+if "your_" in WAREHOUSE or "your_" in CATALOG or "your." in OWNER_USER:
+    print("⚠  Update WAREHOUSE, CATALOG, and OWNER_USER at the top of this script")
+    print("   or pass them as environment variables:")
+    print("   WAREHOUSE_ID=abc CATALOG=my_cat OWNER_USER=me@co.com python3 run_governance.py")
+    raise SystemExit(1)
+
+_w = WorkspaceClient()
 
 def run(label: str, sql: str, allow_fail: bool = False) -> bool:
     try:

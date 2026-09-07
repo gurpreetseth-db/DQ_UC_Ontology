@@ -1,34 +1,46 @@
 bundle:
   name: nexus-retail-analytics
 
+# ── Variables ──────────────────────────────────────────────────────────────
+# Workspace-specific values. Override in databricks.yml.local (gitignored)
+# or pass on the CLI: --var catalog=my_catalog --var warehouse_id=abc123
+#
+# catalog     : UC catalog to create all schemas and tables in.
+#               Must already exist. Your username catalog is a safe choice.
+# warehouse_id: ID of a running SQL warehouse. Find it in:
+#               Workspace → SQL Warehouses → <name> → Connection Details → HTTP Path
+#               (last segment after /sql/1.0/warehouses/)
+
 variables:
   catalog:
-    default: gurpreet_sethi
+    description: "Unity Catalog name to deploy all schemas into. Must already exist."
   warehouse_id:
-    default: 9d8a677b3c55b8a7   # dqx-studio-sql-warehouse
+    description: "SQL warehouse ID used by governance scripts. Find in SQL Warehouse → Connection Details."
+
+# ── Targets ────────────────────────────────────────────────────────────────
+# No workspace.host set here — the workspace is taken from:
+#   1. --profile <name>  flag passed to the CLI   (recommended)
+#   2. DATABRICKS_HOST + DATABRICKS_TOKEN env vars
+#   3. Your active profile in ~/.databrickscfg
+#
+# To set sensible defaults for your own workspace without editing this file,
+# create databricks.yml.local (see databricks.yml.local.example).
 
 targets:
   dev:
     mode: development
     default: true
-    workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com
-    variables:
-      catalog: gurpreet_sethi
 
   prod:
     mode: production
-    workspace:
-      host: https://e2-demo-field-eng.cloud.databricks.com
-    variables:
-      catalog: gurpreet_sethi
 
+# ── Resources ──────────────────────────────────────────────────────────────
 resources:
   pipelines:
     nexus_retail_pipeline:
-      schema: online_retail_bronze    # default publish schema for bronze tables
+      name: "NexusRetail Analytics Pipeline"
       catalog: ${var.catalog}
-      name: NexusRetail Analytics Pipeline
+      schema: online_retail_bronze    # default publish schema for bronze tables
       serverless: true
       channel: CURRENT
       continuous: false
@@ -42,7 +54,7 @@ resources:
       configuration:
         catalog: ${var.catalog}
         pipeline.env: ${bundle.target}
-      clusters: []   # serverless — no cluster config needed
+      clusters: []   # serverless — no cluster config
 
   jobs:
     nexus_retail_generate_data:
@@ -51,7 +63,8 @@ resources:
         - task_key: generate_raw_data
           notebook_task:
             notebook_path: ./setup/01_generate_raw_data.py
-            base_parameters: {}
+            base_parameters:
+              catalog: ${var.catalog}
           environment_key: serverless
       environments:
         - environment_key: serverless
