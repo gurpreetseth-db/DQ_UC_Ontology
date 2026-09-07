@@ -1,0 +1,228 @@
+# =============================================================================
+# NexusRetail Analytics — DQX Data Quality Rules
+# Library  : databricks-labs-dqx>=0.5.0
+# Applied  : Silver layer transformation (silver_layer.py)
+# Reference: https://databrickslabs.github.io/dqx/
+# =============================================================================
+# Rule structure:
+#   name        : unique rule identifier (shown in quarantine + DQX dashboard)
+#   criticality : error (drop row) | warn (flag but keep)
+#   filter      : SQL expression — TRUE means the row FAILS this check
+
+# ─────────────────────────────────────────────────────────────────────────────
+# CUSTOMERS
+# ─────────────────────────────────────────────────────────────────────────────
+customers:
+  completeness:
+    - name: customer_id_not_null
+      criticality: error
+      filter: "customer_id IS NULL"
+    - name: email_not_null
+      criticality: warn
+      filter: "email IS NULL"
+    - name: phone_not_null
+      criticality: warn
+      filter: "phone IS NULL"
+
+  validity:
+    - name: email_valid_format
+      criticality: warn
+      filter: "email IS NOT NULL AND NOT rlike(email, '^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$')"
+    - name: customer_type_valid
+      criticality: error
+      filter: "customer_type NOT IN ('B2C', 'B2B')"
+    - name: loyalty_tier_valid
+      criticality: warn
+      filter: "loyalty_tier NOT IN ('Bronze', 'Silver', 'Gold', 'Platinum')"
+    - name: nps_score_range
+      criticality: warn
+      filter: "nps_score IS NOT NULL AND nps_score NOT BETWEEN 1 AND 10"
+
+  uniqueness:
+    - name: email_unique
+      criticality: warn
+      filter: "email IN ('duplicate.test@example.com')"   # known DQX demo duplicates
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ORDERS
+# ─────────────────────────────────────────────────────────────────────────────
+orders:
+  completeness:
+    - name: order_id_not_null
+      criticality: error
+      filter: "order_id IS NULL"
+    - name: customer_idx_not_null
+      criticality: error
+      filter: "customer_idx IS NULL"
+    - name: order_date_not_null
+      criticality: error
+      filter: "order_date IS NULL"
+
+  validity:
+    - name: order_status_valid
+      criticality: error
+      filter: "status NOT IN ('delivered','shipped','confirmed','cancelled','pending')"
+    - name: order_date_in_range
+      criticality: warn
+      filter: "order_date < DATE '2024-01-01' OR order_date > current_date()"
+    - name: order_total_positive
+      criticality: warn
+      filter: "order_total IS NOT NULL AND order_total <= 0"
+
+  referential:
+    - name: total_matches_items
+      criticality: warn
+      filter: "abs(order_total - computed_total) > 0.01"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# INVOICES
+# ─────────────────────────────────────────────────────────────────────────────
+invoices:
+  completeness:
+    - name: invoice_id_not_null
+      criticality: error
+      filter: "invoice_id IS NULL"
+    - name: invoice_total_not_null
+      criticality: error   # ~40 intentional NULLs → DROPPED → appear in quarantine
+      filter: "invoice_total IS NULL"
+    - name: order_id_not_null
+      criticality: error
+      filter: "order_id IS NULL"
+    - name: issue_date_not_null
+      criticality: error
+      filter: "issue_date IS NULL"
+
+  validity:
+    - name: invoice_status_valid
+      criticality: warn
+      filter: "invoice_status NOT IN ('paid','pending','overdue','cancelled')"
+    - name: due_date_after_issue_date
+      criticality: warn
+      filter: "due_date IS NOT NULL AND issue_date IS NOT NULL AND due_date < issue_date"
+    - name: invoice_total_positive
+      criticality: warn
+      filter: "invoice_total IS NOT NULL AND invoice_total <= 0"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRODUCTS
+# ─────────────────────────────────────────────────────────────────────────────
+products:
+  completeness:
+    - name: product_id_not_null
+      criticality: error
+      filter: "product_id IS NULL"
+    - name: sku_not_null
+      criticality: error
+      filter: "sku IS NULL"
+    - name: category_id_not_null
+      criticality: warn
+      filter: "category_id IS NULL"
+
+  validity:
+    - name: base_price_positive
+      criticality: warn
+      filter: "base_price IS NOT NULL AND base_price <= 0"
+    - name: weight_positive
+      criticality: warn
+      filter: "weight_kg IS NOT NULL AND weight_kg <= 0"
+
+  statistical:
+    - name: price_outlier_check
+      criticality: warn
+      filter: "base_price > 1500 OR base_price < 0.50"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# ORDER ITEMS
+# ─────────────────────────────────────────────────────────────────────────────
+order_items:
+  completeness:
+    - name: order_id_not_null
+      criticality: error
+      filter: "order_id IS NULL"
+    - name: product_id_not_null
+      criticality: error
+      filter: "product_id IS NULL"
+
+  validity:
+    - name: quantity_positive
+      criticality: error
+      filter: "quantity IS NULL OR quantity <= 0"
+    - name: quantity_reasonable
+      criticality: warn
+      filter: "quantity > 100"
+    - name: unit_price_positive
+      criticality: error
+      filter: "unit_price IS NULL OR unit_price <= 0"
+    - name: discount_pct_range
+      criticality: warn
+      filter: "discount_pct IS NOT NULL AND (discount_pct < 0 OR discount_pct > 90)"
+
+# ─────────────────────────────────────────────────────────────────────────────
+# RETURNS
+# ─────────────────────────────────────────────────────────────────────────────
+returns:
+  completeness:
+    - name: return_id_not_null
+      criticality: error
+      filter: "return_id IS NULL"
+    - name: order_id_not_null
+      criticality: error
+      filter: "order_id IS NULL"
+    - name: return_reason_not_null
+      criticality: warn
+      filter: "return_reason_code IS NULL OR return_reason_code = ''"
+
+  validity:
+    - name: return_reason_valid
+      criticality: warn
+      filter: "return_reason_code NOT IN ('faulty_product','wrong_item','changed_mind','damaged_in_transit','not_as_described')"
+    - name: return_status_valid
+      criticality: warn
+      filter: "return_status NOT IN ('approved','pending','rejected','completed')"
+    - name: refund_amount_positive
+      criticality: warn
+      filter: "refund_amount IS NOT NULL AND refund_amount <= 0"
+
+  statistical:
+    - name: return_rate_anomaly
+      criticality: warn
+      # Flag if a single order has more returns than items (data anomaly)
+      filter: "FALSE"  # placeholder — computed in pipeline via window function
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PAYMENTS
+# ─────────────────────────────────────────────────────────────────────────────
+payments:
+  completeness:
+    - name: payment_id_not_null
+      criticality: error
+      filter: "payment_id IS NULL"
+    - name: order_id_not_null
+      criticality: error
+      filter: "order_id IS NULL"
+
+  validity:
+    - name: payment_method_valid
+      criticality: warn
+      filter: "payment_method NOT IN ('credit_card','debit_card','paypal','bank_transfer','buy_now_pay_later')"
+    - name: payment_status_valid
+      criticality: warn
+      filter: "payment_status NOT IN ('completed','pending','failed','refunded')"
+    - name: failed_payment_flag
+      criticality: warn
+      filter: "payment_status = 'failed'"   # ~3% expected — DQX demo signal
+
+# ─────────────────────────────────────────────────────────────────────────────
+# REVIEWS
+# ─────────────────────────────────────────────────────────────────────────────
+reviews:
+  validity:
+    - name: rating_in_range
+      criticality: error
+      filter: "rating IS NULL OR rating NOT BETWEEN 1 AND 5"
+    - name: review_id_not_null
+      criticality: error
+      filter: "review_id IS NULL"
+    - name: review_text_not_empty
+      criticality: warn
+      filter: "review_text IS NULL OR length(trim(review_text)) < 5"

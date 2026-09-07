@@ -1,0 +1,63 @@
+bundle:
+  name: nexus-retail-analytics
+
+variables:
+  catalog:
+    default: gurpreet_sethi
+  warehouse_id:
+    default: 9d8a677b3c55b8a7   # dqx-studio-sql-warehouse
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+    variables:
+      catalog: gurpreet_sethi
+
+  prod:
+    mode: production
+    workspace:
+      host: https://e2-demo-field-eng.cloud.databricks.com
+    variables:
+      catalog: gurpreet_sethi
+
+resources:
+  pipelines:
+    nexus_retail_pipeline:
+      schema: online_retail_bronze    # default publish schema for bronze tables
+      catalog: ${var.catalog}
+      name: NexusRetail Analytics Pipeline
+      serverless: true
+      channel: CURRENT
+      continuous: false
+      libraries:
+        - notebook:
+            path: ./src/bronze_layer.py
+        - notebook:
+            path: ./src/silver_layer.py
+        - notebook:
+            path: ./src/gold_layer.py
+      configuration:
+        catalog: ${var.catalog}
+        pipeline.env: ${bundle.target}
+      clusters: []   # serverless — no cluster config needed
+
+  jobs:
+    nexus_retail_generate_data:
+      name: "NexusRetail — Generate Raw Data"
+      tasks:
+        - task_key: generate_raw_data
+          notebook_task:
+            notebook_path: ./setup/01_generate_raw_data.py
+            base_parameters: {}
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+            dependencies:
+              - faker==24.11.0
+              - holidays==0.46
+              - python-dateutil

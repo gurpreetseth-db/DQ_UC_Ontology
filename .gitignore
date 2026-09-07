@@ -1,0 +1,17 @@
+# Databricks bundle state
+.databricks/
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+*.egg-info/
+
+# macOS
+.DS_Store
+
+# Secrets / env
+.env
+*.local
+databricks.yml.local
