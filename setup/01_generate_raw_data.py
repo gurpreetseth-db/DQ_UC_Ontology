@@ -1,6 +1,5 @@
 # Databricks notebook source
 # NexusRetail Analytics — Synthetic Raw Data Generation
-# Workspace: e2-demo-field-eng | Catalog: gurpreet_sethi
 # Schema: online_retail_raw | Volume: raw_data
 #
 # Story: Global e-commerce retailer "NexusRetail" spans 7 regions, 65 countries.
@@ -22,7 +21,10 @@ from dateutil.relativedelta import relativedelta
 import math
 
 # ── Configuration ──────────────────────────────────────────────────────────
-CATALOG       = "gurpreet_sethi"
+# catalog is injected by the DAB job via base_parameters (set in databricks.local.yml).
+# The widget default is a fallback for manual notebook runs only.
+dbutils.widgets.text("catalog", "your_catalog_name")
+CATALOG       = dbutils.widgets.get("catalog")
 RAW_SCHEMA    = "online_retail_raw"
 VOLUME        = "raw_data"
 BASE_PATH     = f"/Volumes/{CATALOG}/{RAW_SCHEMA}/{VOLUME}"
