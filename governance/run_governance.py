@@ -1,28 +1,39 @@
-"""
-NexusRetail Governance Setup
-Applies comments, tags, PII masks, and grants across all 5 schemas.
+# Databricks notebook source
+# NexusRetail Analytics — Governance Setup
+# Applies comments, tags, PII masks, and grants across all 5 schemas.
+#
+# Run via bundle job:
+#   databricks bundle run nexus_retail_governance -t dev
+#
+# Or run locally with env vars:
+#   CATALOG=gsethi WAREHOUSE_ID=abc123 OWNER_USER=me@co.com python3 governance/run_governance.py
 
-Usage:
-  CATALOG=gsethi WAREHOUSE_ID=abc123 OWNER_USER=me@co.com python3 governance/run_governance.py
-
-Or export first:
-  export CATALOG=gsethi
-  export WAREHOUSE_ID=abc123          # SQL Warehouses → Connection Details
-  export OWNER_USER=me@databricks.com
-  python3 governance/run_governance.py
-"""
+# COMMAND ----------
 import os, time
 from databricks.sdk import WorkspaceClient
 from databricks.sdk.service.sql import StatementState
 
-CATALOG       = os.environ.get("CATALOG",       "your_catalog_name")
-WAREHOUSE_ID  = os.environ.get("WAREHOUSE_ID",  "your_warehouse_id")
-OWNER_USER    = os.environ.get("OWNER_USER",    "your.email@company.com")
+# Reads from DAB job base_parameters when run as a notebook job.
+# Falls back to environment variables for local execution.
+def _get(param: str, default: str = "") -> str:
+    try:
+        return dbutils.widgets.get(param)
+    except Exception:
+        return os.environ.get(param.upper(), default)
+
+dbutils.widgets.text("catalog",      "your_catalog_name")
+dbutils.widgets.text("warehouse_id", "your_warehouse_id")
+dbutils.widgets.text("owner_user",   "your.email@company.com")
+
+CATALOG      = _get("catalog")
+WAREHOUSE_ID = _get("warehouse_id")
+OWNER_USER   = _get("owner_user")
 
 if any("your_" in v or "your." in v for v in [CATALOG, WAREHOUSE_ID, OWNER_USER]):
-    print("⚠  Set CATALOG, WAREHOUSE_ID, and OWNER_USER before running:")
-    print("   CATALOG=my_cat WAREHOUSE_ID=abc OWNER_USER=me@co.com python3 run_governance.py")
-    raise SystemExit(1)
+    raise ValueError(
+        "Set catalog, warehouse_id, and owner_user — either via job base_parameters "
+        "or env vars: CATALOG=x WAREHOUSE_ID=y OWNER_USER=z python3 run_governance.py"
+    )
 
 w = WorkspaceClient()
 

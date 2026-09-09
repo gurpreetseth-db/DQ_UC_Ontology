@@ -13,8 +13,9 @@ targets:
       host: https://YOUR-WORKSPACE.cloud.databricks.com   # <-- change this
       profile: your-cli-profile-name                      # optional: ~/.databrickscfg profile
     variables:
-      catalog: your_catalog_name      # must already exist in your workspace
-      warehouse_id: your_warehouse_id # SQL Warehouses → <name> → Connection Details
+      catalog:      your_catalog_name      # must already exist in your workspace
+      warehouse_id: your_warehouse_id      # SQL Warehouses → <name> → Connection Details
+      owner_user:   your.email@company.com # user who gets unmasked PII access
 
   prod:
     workspace:

@@ -19,7 +19,9 @@ variables:
   catalog:
     description: "Unity Catalog name to deploy all schemas into. Must already exist."
   warehouse_id:
-    description: "SQL warehouse ID used by governance scripts. Find in SQL Warehouse → Connection Details."
+    description: "SQL warehouse ID used by governance and Genie setup. Find in SQL Warehouse → Connection Details."
+  owner_user:
+    description: "Email of the user who gets unmasked PII access (UC column mask owner)."
 
 # ── Targets ────────────────────────────────────────────────────────────────
 # workspace.host and profile are set in databricks.local.yml, not here.
@@ -73,6 +75,22 @@ resources:
               - holidays==0.46
               - python-dateutil
 
+    nexus_retail_governance:
+      name: "NexusRetail — Governance Setup"
+      tasks:
+        - task_key: run_governance
+          notebook_task:
+            notebook_path: ./governance/run_governance.py
+            base_parameters:
+              catalog:      ${var.catalog}
+              warehouse_id: ${var.warehouse_id}
+              owner_user:   ${var.owner_user}
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"
+
     nexus_retail_genie_setup:
       name: "NexusRetail — Genie Setup"
       tasks:
@@ -80,7 +98,8 @@ resources:
           notebook_task:
             notebook_path: ./setup/02_genie_setup.py
             base_parameters:
-              catalog: ${var.catalog}
+              catalog:      ${var.catalog}
+              warehouse_id: ${var.warehouse_id}
           environment_key: serverless
       environments:
         - environment_key: serverless
