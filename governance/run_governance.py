@@ -1,197 +1,734 @@
 """
-NexusRetail Governance Setup — runs all DDL statements via Databricks SDK
+NexusRetail Governance Setup
+Applies comments, tags, PII masks, and grants across all 5 schemas.
 
 Usage:
+  CATALOG=gsethi WAREHOUSE_ID=abc123 OWNER_USER=me@co.com python3 governance/run_governance.py
+
+Or export first:
+  export CATALOG=gsethi
+  export WAREHOUSE_ID=abc123          # SQL Warehouses → Connection Details
+  export OWNER_USER=me@databricks.com
   python3 governance/run_governance.py
-
-Configuration (set these before running):
-  WAREHOUSE  — SQL warehouse ID (from SQL Warehouses → Connection Details)
-  CATALOG    — UC catalog name (must already exist)
-  OWNER_USER — email of the user who gets unmasked PII access
-
-The script uses your active Databricks CLI profile (or DATABRICKS_HOST +
-DATABRICKS_TOKEN env vars) — same credentials as `databricks bundle deploy`.
 """
-import os
+import os, time
 from databricks.sdk import WorkspaceClient
+from databricks.sdk.service.sql import StatementState
 
-# ── Configure for your workspace ───────────────────────────────────────────
-WAREHOUSE  = os.environ.get("WAREHOUSE_ID",  "your_warehouse_id")   # <-- set this
-CATALOG    = os.environ.get("CATALOG",        "your_catalog_name")   # <-- set this
-OWNER_USER = os.environ.get("OWNER_USER",     "your.email@company.com")  # <-- set this
-# ───────────────────────────────────────────────────────────────────────────
-# Or pass as environment variables:
-#   WAREHOUSE_ID=abc123 CATALOG=my_catalog OWNER_USER=me@co.com python3 run_governance.py
+CATALOG       = os.environ.get("CATALOG",       "your_catalog_name")
+WAREHOUSE_ID  = os.environ.get("WAREHOUSE_ID",  "your_warehouse_id")
+OWNER_USER    = os.environ.get("OWNER_USER",    "your.email@company.com")
 
-if "your_" in WAREHOUSE or "your_" in CATALOG or "your." in OWNER_USER:
-    print("⚠  Update WAREHOUSE, CATALOG, and OWNER_USER at the top of this script")
-    print("   or pass them as environment variables:")
-    print("   WAREHOUSE_ID=abc CATALOG=my_cat OWNER_USER=me@co.com python3 run_governance.py")
+if any("your_" in v or "your." in v for v in [CATALOG, WAREHOUSE_ID, OWNER_USER]):
+    print("⚠  Set CATALOG, WAREHOUSE_ID, and OWNER_USER before running:")
+    print("   CATALOG=my_cat WAREHOUSE_ID=abc OWNER_USER=me@co.com python3 run_governance.py")
     raise SystemExit(1)
 
-_w = WorkspaceClient()
+w = WorkspaceClient()
 
-def run(label: str, sql: str, allow_fail: bool = False) -> bool:
+# ── helpers ──────────────────────────────────────────────────────────────────
+
+def sql(label: str, stmt: str, allow_fail: bool = False) -> bool:
+    """Execute a SQL statement and print the result."""
     try:
-        resp  = _w.statement_execution.execute_statement(
-            warehouse_id=WAREHOUSE, statement=sql.strip(), wait_timeout="30s")
-        state = str(resp.status.state) if resp.status else "UNKNOWN"
-        err   = resp.status.error.message[:120] if resp.status and resp.status.error else ""
-        ok    = "SUCCEEDED" in state or "CLOSED" in state
+        r = w.statement_execution.execute_statement(
+            warehouse_id=WAREHOUSE_ID,
+            statement=stmt.strip(),
+            wait_timeout="0s",
+        )
+        sid = r.statement_id
+        for _ in range(30):
+            time.sleep(2)
+            r2 = w.statement_execution.get_statement(sid)
+            st = r2.status.state
+            if st in (StatementState.SUCCEEDED, StatementState.CLOSED):
+                print(f"  ✓  {label}")
+                return True
+            if st in (StatementState.FAILED, StatementState.CANCELED):
+                err = r2.status.error.message[:150] if r2.status.error else "?"
+                icon = "⚠" if allow_fail else "✗"
+                print(f"  {icon}  {label}  {err}")
+                return False
+        print(f"  ⏰  {label}  timeout")
+        return False
     except Exception as e:
-        state, err, ok = "EXC", str(e)[:120], False
+        icon = "⚠" if allow_fail else "✗"
+        print(f"  {icon}  {label}  {str(e)[:120]}")
+        return False
 
-    icon = "✓" if ok else ("⚠" if allow_fail else "✗")
-    if not ok: print(f"  {icon}  {label}  [{state}] {err}")
-    else:      print(f"  {icon}  {label}")
-    return ok
 
-print("\n═══ NexusRetail Governance Setup ═══\n")
+def apply_tags(obj_type: str, full_name: str, tags: dict, allow_fail: bool = True):
+    """Apply UC tags to a securable object."""
+    tag_str = ",".join(f"'{k}'='{v}'" for k, v in tags.items())
+    sql(f"tag {full_name}", f"ALTER {obj_type} {full_name} SET TAGS ({tag_str})", allow_fail)
 
-# ── Section 1: PII Column Mask Functions ──────────────────────────────────────
-print("1. Creating PII column mask functions...")
 
-run("mask_full_name", f"""
-CREATE OR REPLACE FUNCTION `{CATALOG}`.online_retail_silver.mask_full_name(raw_name STRING)
+def col_comment(table: str, col: str, comment: str):
+    """Apply a comment to a table column (Streaming Tables only, not MVs)."""
+    sql(f"col comment {table}.{col}",
+        f"ALTER TABLE {table} ALTER COLUMN {col} COMMENT '{comment}'",
+        allow_fail=True)
+
+
+def col_tag(table: str, col: str, tags: dict):
+    """Apply tags to a column."""
+    tag_str = ",".join(f"'{k}'='{v}'" for k, v in tags.items())
+    sql(f"col tag {table}.{col}",
+        f"ALTER TABLE {table} ALTER COLUMN {col} SET TAGS ({tag_str})",
+        allow_fail=True)
+
+# ── metadata config ───────────────────────────────────────────────────────────
+# Structure: {full_table_name: {comment, tags, columns: {col: comment}}}
+# Note: column comments/tags only apply to Streaming Tables, not MVs/Views.
+
+C = CATALOG  # shorthand
+
+CATALOG_COMMENT = f"""
+NexusRetail Analytics Platform — primary demo catalog.
+Contains domain schemas for agriculture ops and the NexusRetail online retail demo.
+Online retail schemas: online_retail_raw (source), online_retail_bronze (ingest),
+online_retail_silver (cleansed, PII masked), online_retail_gold (aggregated),
+online_retail_metrics (semantic layer).
+Owner: {OWNER_USER}
+""".strip().replace("\n", " ")
+
+SCHEMA_COMMENTS = {
+    f"{C}.online_retail_raw":
+        "NexusRetail raw source data — 20 Parquet tables in UC Volume /raw_data/. "
+        "Landing zone for SDP Auto Loader bronze ingestion. "
+        "Contains unmasked PII in customer tables. Owner: data_engineering.",
+    f"{C}.online_retail_bronze":
+        "NexusRetail bronze layer — 18 Auto Loader streaming tables from UC Volume Parquet files. "
+        "Raw fidelity preserved, schema enforced, metadata columns added (_ingestion_time, _source_file). "
+        "PII present in bronze_customers, bronze_customer_demographics, bronze_customer_addresses. "
+        "Quality tier: bronze. Owner: data_engineering.",
+    f"{C}.online_retail_silver":
+        "NexusRetail silver layer — cleansed, DQX-style validated streaming tables. "
+        "PII masked via UC column mask functions on silver_dim_customers. "
+        "Only the catalog owner sees raw PII values. "
+        "silver_dq_quarantine captures 139 records failing critical checks. "
+        "Quality tier: silver. Regulatory: GDPR-aligned column masks applied.",
+    f"{C}.online_retail_gold":
+        "NexusRetail gold layer — 6 business-ready Materialized View aggregations. "
+        "No PII — customer data aggregated by segment/bracket only. "
+        "Tables: category_sales, customer_segment_sales, regional_performance, "
+        "customer_lifetime_value, return_analysis, daily_revenue. "
+        "Quality tier: gold. Owner: analytics.",
+    f"{C}.online_retail_metrics":
+        "NexusRetail semantic/metrics layer — 3 UC Materialized Views and 3 Metric Views "
+        "(WITH METRICS LANGUAGE YAML). Genie One data sources. No PII. "
+        "Metric views: metrics_sales_kpis, metrics_customer_kpis, metrics_product_kpis. "
+        "Quality tier: gold. Owner: analytics. Genie domain: Online Retail Analytics.",
+}
+
+TABLE_METADATA = {
+    # ── BRONZE ──────────────────────────────────────────────────────────────
+    f"`{C}`.online_retail_bronze.bronze_orders": {
+        "comment":
+            "Raw order headers ingested via Auto Loader from UC Volume. "
+            "1,200 orders over 24 months with Q4 seasonal spike (Oct-Dec ~40% higher volume). "
+            "Statuses: delivered (65%), shipped (15%), confirmed (10%), cancelled (8%), pending (2%). "
+            "order_total computed from order_items sum. Grain: one row per order.",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "pii": "false"},
+        "columns": {
+            "order_id":          "Unique order identifier in ORD-XXXXXXX format. Primary key. Never null (expect_or_fail).",
+            "customer_idx":      "Integer FK to bronze_customers.customer_idx. Used to derive customer_id as CUST-XXXXXX.",
+            "order_date":        "Timestamp when the order was placed. Seasonal spike visible in Oct-Dec each year.",
+            "estimated_delivery":"Expected delivery date. NULL for cancelled orders.",
+            "channel":           "Sales channel: web (55%), mobile (35%), partner_api (10%).",
+            "status":            "Order lifecycle status. Validated by SDP expect decorator.",
+            "order_total":       "Sum of all order line items after discounts. Validated against computed_total in silver.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_customers": {
+        "comment":
+            "Raw customer master with unmasked PII. 600 customers: 500 B2C individuals and 100 B2B companies. "
+            "PII columns (full_name, email, phone, date_of_birth) are unmasked at this layer. "
+            "Column masks are applied at silver_dim_customers — access to this table requires the owner role. "
+            "3 intentional duplicate emails for DQX demo (duplicate.test@example.com). "
+            "Grain: one row per customer.",
+        "tags": {"quality_tier": "bronze", "domain": "customer", "contains_pii": "true",
+                 "pii_classification": "direct", "regulatory": "gdpr", "data_product": "nexus_retail",
+                 "owner": "data_engineering"},
+        "columns": {
+            "customer_id":    "Business key in CUST-XXXXXX format. Primary key.",
+            "full_name":      "PII:direct — customer full name. Masked at silver layer: shows first initial only for non-owner.",
+            "email":          "PII:direct — customer email address. Masked at silver. 3 duplicates injected for DQX uniqueness demo.",
+            "phone":          "PII:direct — customer phone number. Masked at silver: shows ***-***-XXXX for non-owner.",
+            "date_of_birth":  "PII:direct — customer date of birth. Masked at silver: truncated to year-only for non-owner. GDPR Art.4(1).",
+            "customer_type":  "Account type: B2C (individual consumer) or B2B (business account).",
+            "region_id":      "FK to bronze_ref_regions.region_id. Derived from customer primary address country.",
+            "country_code":   "ISO 3166-1 alpha-2 country code. FK to bronze_ref_countries.",
+            "is_active":      "TRUE for active customers. FALSE for churned or closed accounts.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_invoices": {
+        "comment":
+            "Raw invoices from confirmed, shipped, and delivered orders — one invoice per order. "
+            "~52 invoices intentionally have NULL invoice_total to demonstrate DQX completeness checks. "
+            "These NULL records are dropped at silver_fact_invoices via @dp.expect_or_drop and captured "
+            "in silver_dq_quarantine with rule: invoice_total_null. Grain: one row per invoice.",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "dq_known_issue": "null_totals_intentional_demo", "owner": "data_engineering"},
+        "columns": {
+            "invoice_id":      "Unique invoice identifier in INV-XXXXXXX format. Primary key.",
+            "invoice_number":  "Human-readable invoice reference in NR-YYYY-XXXXXX format. Should be globally unique.",
+            "order_id":        "FK to bronze_orders.order_id. One invoice per order.",
+            "issue_date":      "Date the invoice was generated (order_date + 1 day).",
+            "due_date":        "Payment due date (issue_date + 30 days). Used for overdue detection in silver.",
+            "invoice_status":  "Lifecycle: paid, pending, overdue, cancelled.",
+            "invoice_total":   "Invoice total in USD. ~52 records are intentionally NULL to demonstrate DQX DROP behaviour at silver.",
+            "order_total":     "Original order total from bronze_orders. Used for reconciliation check in silver.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_products": {
+        "comment":
+            "Raw product master for 173 products across 12 categories and 50 subcategories. "
+            "faulty_batch=TRUE is applied at bronze ingest time for 8 FAULT-PHON-* SKUs (product_idx 4-11). "
+            "These defective products are the root cause of the Q3 2025 return spike demo story. "
+            "Current price is enriched from bronze_product_pricing in the silver dim. "
+            "Grain: one row per product.",
+        "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
+                 "contains_faulty_batch": "true", "owner": "data_engineering"},
+        "columns": {
+            "product_id":      "Unique product identifier in PROD-XXXXX format. Primary key.",
+            "sku":             "Stock keeping unit. FAULT-PHON-00XX prefix for the 8 defective batch products.",
+            "product_name":    "Human-readable product name including brand.",
+            "brand":           "Product brand name (e.g., TechNova, StyleCraft).",
+            "category_id":     "FK to bronze_product_categories. CAT-01 = Electronics, CAT-02 = Apparel, etc.",
+            "subcategory_id":  "FK to bronze_product_subcategories. SUB-0101 = Smartphones (contains faulty batch).",
+            "faulty_batch":    "TRUE for 8 FAULT-PHON-00XX SKUs (product_idx 4-11) from the Q3 2025 defective shipment. Root cause of Q4 2025 return spike in APAC-East.",
+            "base_price":      "Original listed price in USD. Must be > 0 (validated by SDP expect).",
+            "is_active":       "FALSE for discontinued products.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_returns": {
+        "comment":
+            "Raw return requests. 120 total returns; 78 (65%) occurred in Q4 2025 — the main anomaly signal. "
+            "41 returns have reason_code=faulty_product; these correlate with FAULT-PHON-* SKUs. "
+            "Returns are validated at silver_fact_returns with return_reason_code expect decorator. "
+            "Grain: one row per return request.",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "contains_anomaly": "q4_2025_return_spike", "owner": "data_engineering"},
+        "columns": {
+            "return_id":           "Unique return identifier in RET-XXXXXX format. Primary key.",
+            "order_id":            "FK to bronze_orders. The order being returned.",
+            "return_date":         "Date the return was initiated. Q4 2025 (Oct-Dec) shows anomalous spike of 78 returns.",
+            "return_reason_code":  "Reason category: faulty_product | wrong_item | changed_mind | damaged_in_transit | not_as_described.",
+            "return_status":       "Processing status: approved | pending | rejected | completed.",
+            "refund_amount":       "USD amount refunded. NULL if return not yet approved.",
+            "is_faulty_order":     "TRUE if the originating order contained any FAULT-PHON-* products.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_payments": {
+        "comment":
+            "Raw payment records — one per order. "
+            "~43 records have payment_status=failed (approx. 3% failure rate), intentionally embedded "
+            "for DQX warn demo. Failed payments are quarantined in silver_dq_quarantine with rule: failed_payment. "
+            "Grain: one row per payment.",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "dq_known_issue": "failed_payments_intentional_demo", "owner": "data_engineering"},
+        "columns": {
+            "payment_id":      "Unique payment identifier in PAY-XXXXXXX format. Primary key.",
+            "order_id":        "FK to bronze_orders.",
+            "payment_method":  "Method used: credit_card | debit_card | paypal | bank_transfer | buy_now_pay_later.",
+            "payment_status":  "Outcome: completed | pending | failed | refunded. ~43 records are failed (DQX warn demo).",
+            "currency_code":   "ISO 4217 currency code (USD, EUR, CAD). Derived from customer region.",
+            "gateway_ref":     "Payment gateway transaction reference (GW- + 12 hex chars).",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_order_items": {
+        "comment":
+            "Raw order line items. 2-4 items per order. Each row is one product on one order. "
+            "unit_price is the price at time of purchase (may differ from current product price). "
+            "discount_pct ranges from 0-20% based on promotional activity. "
+            "Grain: one row per (order, product) combination.",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "owner": "data_engineering"},
+        "columns": {
+            "line_id":      "Line item key in ORD-XXXXXXX-N format. Primary key.",
+            "order_id":     "FK to bronze_orders.",
+            "product_id":   "FK to bronze_products.",
+            "quantity":     "Units ordered. Must be 1-999 (validated). Typical range 1-5.",
+            "unit_price":   "Price per unit at time of order in USD. Must be > 0.",
+            "discount_pct": "Promotional discount percentage applied (0-20%).",
+            "line_total":   "quantity * unit_price * (1 - discount_pct/100). Summed to compute order_total.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_invoice_line_items": {
+        "comment":
+            "Raw invoice line items with tax calculation. 2-3 items per invoice. "
+            "Tax rates: Electronics 10%, Food 0%, all other categories 8%. "
+            "extended_price = line_total + tax_amount. "
+            "Grain: one row per (invoice, order line item) combination.",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "owner": "data_engineering"},
+        "columns": {
+            "inv_line_id":    "Line item key combining invoice_id and line_id. Primary key.",
+            "invoice_id":     "FK to bronze_invoices.",
+            "product_id":     "FK to bronze_products.",
+            "tax_rate":       "Applied tax rate: 0.10 (electronics), 0.00 (food), 0.08 (all others).",
+            "tax_amount":     "Tax in USD = line_total * tax_rate.",
+            "extended_price": "Total including tax = line_total + tax_amount.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_customer_demographics": {
+        "comment":
+            "Customer demographic profile data. One row per customer. "
+            "annual_income_usd is PII-sensitive (quasi-identifier). "
+            "nps_score (1-10) validated by SDP expect decorator. "
+            "loyalty_tier drives CLV segmentation in gold_customer_lifetime_value. "
+            "Grain: one row per customer.",
+        "tags": {"quality_tier": "bronze", "domain": "customer", "contains_pii": "true",
+                 "pii_classification": "quasi", "data_product": "nexus_retail", "owner": "data_engineering"},
+        "columns": {
+            "customer_id":         "FK to bronze_customers.customer_id.",
+            "age_bracket":         "Age group: 18-24 | 25-34 | 35-44 | 45-54 | 55+.",
+            "income_bracket":      "Salary band: <$30K | $30K-$60K | $60K-$100K | $100K-$200K | $200K+.",
+            "loyalty_tier":        "Program tier: Bronze (40%) | Silver (30%) | Gold (20%) | Platinum (10%).",
+            "acquisition_channel": "How the customer joined: organic_search | paid_search | social_media | referral | email_campaign.",
+            "annual_income_usd":   "PII:quasi — exact annual income in USD. Treated as sensitive financial data.",
+            "nps_score":           "Net Promoter Score 1-10. Validated: must be in range 1-10.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_customer_addresses": {
+        "comment":
+            "Customer shipping and billing addresses. 1-2 addresses per customer (~800 total). "
+            "address_line1 and postcode are PII. is_primary=TRUE for billing address. "
+            "country_code FK to bronze_ref_countries. "
+            "Grain: one row per address.",
+        "tags": {"quality_tier": "bronze", "domain": "customer", "contains_pii": "true",
+                 "pii_classification": "direct", "data_product": "nexus_retail", "owner": "data_engineering"},
+        "columns": {
+            "customer_id":   "FK to bronze_customers.",
+            "address_type":  "billing or shipping.",
+            "address_line1": "PII:direct — street address. Redacted for non-owner at silver.",
+            "city":          "City name.",
+            "postcode":      "PII:direct — postal/ZIP code.",
+            "country_code":  "ISO 3166-1 alpha-2 FK to bronze_ref_countries.",
+            "is_primary":    "TRUE for the primary billing address.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_product_reviews": {
+        "comment":
+            "Customer product reviews with star ratings. 2,000 reviews from delivered orders. "
+            "FAULT-PHON-* products (faulty_batch=TRUE) show a 1-2 star spike from Q4 2025 onward, "
+            "corroborating the return rate anomaly visible in gold_return_analysis. "
+            "Grain: one row per (order, product) review.",
+        "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
+                 "owner": "data_engineering"},
+        "columns": {
+            "review_id":         "Unique review identifier in REV-XXXXXXX format. Primary key.",
+            "product_id":        "FK to bronze_products.",
+            "rating":            "Star rating 1-5. FAULT-PHON-* products spike at 1-2 stars from Q4 2025.",
+            "review_text":       "Free-text review content.",
+            "verified_purchase": "TRUE — all reviews in this dataset are from confirmed deliveries.",
+            "helpful_votes":     "Number of helpful votes. Faulty product reviews tend to have higher vote counts.",
+            "is_faulty_product": "TRUE if the reviewed product is a FAULT-PHON-* defective SKU.",
+        },
+    },
+    f"`{C}`.online_retail_bronze.bronze_customer_support_tickets": {
+        "comment":
+            "Customer support ticket log. 1,500 tickets over 24 months. "
+            "Ticket volume spikes 3x in Q4 2025 (Oct 2025 – Jan 2026) due to faulty batch complaints. "
+            "product_defect tickets rise from 10% to 40% during the spike period. "
+            "Grain: one row per ticket.",
+        "tags": {"quality_tier": "bronze", "domain": "customer", "data_product": "nexus_retail",
+                 "contains_anomaly": "q4_2025_ticket_spike", "owner": "data_engineering"},
+        "columns": {
+            "ticket_id":            "Unique ticket identifier in TKT-XXXXXXX format. Primary key.",
+            "customer_id":          "FK to bronze_customers.",
+            "order_id":             "Optional FK to bronze_orders. Set for ~30% of tickets.",
+            "category":             "Issue type: product_defect | delivery_issue | billing_query | general_enquiry | return_request.",
+            "priority":             "Severity: low | medium | high | critical. Escalated during Q4 2025 spike.",
+            "status":               "Resolution status: open | in_progress | resolved | closed.",
+            "is_faulty_escalation": "TRUE for product_defect tickets raised during the Q4 2025 faulty batch period.",
+        },
+    },
+
+    # ── SILVER ────────────────────────────────────────────────────────────────
+    f"`{C}`.online_retail_silver.silver_dim_customers": {
+        "comment":
+            "Cleansed SCD-1 customer dimension enriched with demographics. "
+            "PII column masks applied: full_name → first initial; email → ***@domain; "
+            "phone → ***-***-XXXX; date_of_birth → year only. "
+            "Only the catalog owner sees raw values. 3 duplicate emails quarantined. "
+            "Regulatory: GDPR data minimisation applied via column masks. "
+            "Grain: one row per customer (current state, SCD-1).",
+        "tags": {"quality_tier": "silver", "domain": "customer", "contains_pii": "true",
+                 "pii_masked": "true", "regulatory": "gdpr", "data_product": "nexus_retail",
+                 "scd_type": "1", "owner": "data_engineering"},
+        "columns": {
+            "customer_id":         "Business key CUST-XXXXXX. Primary key.",
+            "full_name":           "PII:direct — Masked for non-owner: first initial + ***. GDPR Art.4(1).",
+            "email":               "PII:direct — Masked: ***@domain.com. 3 duplicates quarantined by DQX.",
+            "phone":               "PII:direct — Masked: ***-***-XXXX.",
+            "date_of_birth":       "PII:direct — Masked to Jan 1 of birth year for non-owner. GDPR minimisation.",
+            "customer_type":       "B2C or B2B.",
+            "region_id":           "FK to silver_dim_geography.region_id.",
+            "country_code":        "ISO 3166-1 alpha-2 FK to silver_dim_geography.",
+            "age_bracket":         "Derived from date_of_birth: 18-24 | 25-34 | 35-44 | 45-54 | 55+.",
+            "income_bracket":      "Salary band label: <$30K | $30K-$60K | $60K-$100K | $100K-$200K | $200K+.",
+            "annual_income_usd":   "PII:quasi — annual income in USD. Sensitive financial attribute.",
+            "loyalty_tier":        "Loyalty program tier: Bronze | Silver | Gold | Platinum.",
+            "acquisition_channel": "Customer acquisition source: organic_search | paid_search | social_media | referral | email_campaign.",
+            "nps_score":           "Net Promoter Score 1-10.",
+            "__START_AT":          "SCD-1 sequence number (Unix ms). Tracks most recent change timestamp.",
+        },
+    },
+    f"`{C}`.online_retail_silver.silver_dim_products": {
+        "comment":
+            "Enriched product dimension with flattened category + subcategory hierarchy and current price. "
+            "faulty_batch=TRUE for 8 FAULT-PHON-* SKUs (product_idx 4-11). "
+            "current_price is the most recent effective price from bronze_product_pricing. "
+            "avg_return_rate is the category-level historical return rate benchmark. "
+            "Grain: one row per product (streaming, latest state).",
+        "tags": {"quality_tier": "silver", "domain": "product", "contains_faulty_batch": "true",
+                 "data_product": "nexus_retail", "owner": "data_engineering"},
+        "columns": {
+            "product_id":      "Business key PROD-XXXXX. Primary key.",
+            "sku":             "Stock keeping unit. FAULT-PHON-00XX for the 8 defective products.",
+            "category_id":     "FK to category dimension. CAT-01 = Electronics.",
+            "category_name":   "Human-readable category: Electronics | Apparel | Home & Living | etc.",
+            "subcategory_id":  "FK to subcategory. SUB-0101 = Smartphones (contains all faulty batch items).",
+            "subcategory_name":"Human-readable subcategory name.",
+            "current_price":   "Most recent effective price in USD from product pricing history.",
+            "base_price":      "Original listed price at product creation.",
+            "faulty_batch":    "TRUE for 8 FAULT-PHON-* products. Root cause of Q3 2025 defect batch and Q4 2025 return spike.",
+            "avg_return_rate": "Category-level historical return rate benchmark. Electronics = 0.08 (8%).",
+        },
+    },
+    f"`{C}`.online_retail_silver.silver_fact_orders": {
+        "comment":
+            "Cleansed order facts enriched with customer geography. "
+            "order_total validated against computed_total (sum of order_items) with ±$0.01 tolerance. "
+            "Records with NULL customer or invalid status are dropped via @dp.expect_or_drop. "
+            "region_id and region_name derived from customer billing country. "
+            "Grain: one row per order.",
+        "tags": {"quality_tier": "silver", "domain": "transaction", "data_product": "nexus_retail",
+                 "owner": "data_engineering"},
+        "columns": {
+            "order_id":       "Business key ORD-XXXXXXX. Primary key.",
+            "customer_id":    "FK to silver_dim_customers.",
+            "region_id":      "FK to silver_dim_geography derived from customer billing country.",
+            "region_name":    "Human-readable region: AMER-North | EMEA-West | APAC-East | etc.",
+            "super_region":   "High-level grouping: Americas | EMEA | Asia Pacific.",
+            "order_total":    "Invoice total in USD. Validated against computed_total.",
+            "computed_total": "SDP-computed total = sum(order_items.line_total). Used for reconciliation.",
+            "item_count":     "Number of line items on this order.",
+            "loyalty_tier":   "Customer loyalty tier at time of order. Denormalised for analytics performance.",
+            "age_bracket":    "Customer age bracket at time of order. Denormalised for analytics performance.",
+        },
+    },
+    f"`{C}`.online_retail_silver.silver_fact_invoices": {
+        "comment":
+            "Validated invoices. ~52 NULL invoice_total records from bronze are DROPPED here "
+            "(captured in silver_dq_quarantine as rule: invoice_total_null). "
+            "is_overdue flag = due_date < today AND status = pending. "
+            "total_variance = invoice_total - order_total. Should be ≤ $0.01 when total_reconciled = TRUE. "
+            "Grain: one row per invoice (with valid total only).",
+        "tags": {"quality_tier": "silver", "domain": "transaction", "dq_note": "null_totals_dropped",
+                 "data_product": "nexus_retail", "owner": "data_engineering"},
+        "columns": {
+            "invoice_id":         "Business key INV-XXXXXXX. Primary key.",
+            "invoice_number":     "Human-readable NR-YYYY-XXXXXX reference.",
+            "customer_id":        "FK to silver_dim_customers (via order).",
+            "invoice_total":      "Invoice total in USD. NULL records from bronze are excluded (dropped by SDP expect_or_drop).",
+            "order_total":        "Corresponding order total for reconciliation comparison.",
+            "total_variance":     "invoice_total minus order_total. Non-zero values indicate reconciliation gap.",
+            "total_reconciled":   "TRUE when abs(total_variance) <= $0.01. Key AR quality metric.",
+            "is_overdue":         "TRUE if due_date < today AND invoice_status = pending. Triggers AR alerts.",
+        },
+    },
+    f"`{C}`.online_retail_silver.silver_fact_returns": {
+        "comment":
+            "Enriched return facts linked to orders, products, and the faulty_batch flag. "
+            "41 returns have return_reason_code=faulty_product. "
+            "faulty_batch_involved=TRUE for returns that included FAULT-PHON-* SKUs. "
+            "return_category groups reason codes: quality_issue | fulfilment_error | customer_preference. "
+            "Grain: one row per return request.",
+        "tags": {"quality_tier": "silver", "domain": "transaction", "contains_anomaly": "q4_2025_return_spike",
+                 "data_product": "nexus_retail", "owner": "data_engineering"},
+        "columns": {
+            "return_id":              "Business key RET-XXXXXX. Primary key.",
+            "order_id":               "FK to silver_fact_orders.",
+            "region_id":              "FK to silver_dim_geography from originating order.",
+            "return_reason_code":     "Customer-stated reason: faulty_product | wrong_item | changed_mind | damaged_in_transit | not_as_described.",
+            "return_category":        "Derived grouping: quality_issue (faulty_product) | fulfilment_error (wrong_item, not_as_described) | customer_preference (changed_mind).",
+            "faulty_batch_involved":  "TRUE for returns that included one or more FAULT-PHON-* defective products.",
+            "returned_product_ids":   "Array of product_ids included in this return.",
+            "returned_quantity":      "Total units returned across all items.",
+        },
+    },
+    f"`{C}`.online_retail_silver.silver_dq_quarantine": {
+        "comment":
+            "DQX-style quarantine MV — captures all records failing critical data quality checks. "
+            "Current contents: ~52 NULL invoice totals, 3 duplicate customer emails, "
+            "~43 failed payments, 41 faulty_product return flags. Total: 139 records. "
+            "Row count > 0 should trigger a data quality alert. "
+            "Monitor this table after every pipeline run as a data health KPI.",
+        "tags": {"quality_tier": "silver", "domain": "data_quality", "alert_on": "nonzero_row_count",
+                 "data_product": "nexus_retail", "owner": "data_engineering"},
+    },
+
+    # ── GOLD ─────────────────────────────────────────────────────────────────
+    f"`{C}`.online_retail_gold.gold_category_sales": {
+        "comment":
+            "Category-level revenue aggregation by subcategory, region, and month. "
+            "All dimension columns retained for full dashboard slice-and-dice flexibility. "
+            "return_rate_pct = return_count / order_count * 100. "
+            "Electronics shows anomalous return_rate_pct spike in Q4 2025 due to FAULT-PHON-* batch. "
+            "Grain: category × subcategory × brand × region × month.",
+        "tags": {"quality_tier": "gold", "domain": "product", "owner": "analytics",
+                 "grain": "category_subcategory_region_month", "data_product": "nexus_retail"},
+    },
+    f"`{C}`.online_retail_gold.gold_customer_segment_sales": {
+        "comment":
+            "Customer demographic segment revenue breakdown. "
+            "Dimensions: age_bracket × income_bracket × loyalty_tier × acquisition_channel × region × month. "
+            "repeat_purchase_rate_pct = distinct returning customers / distinct total customers * 100. "
+            "revenue_per_customer is a CLV proxy metric segmented by demographics. "
+            "Grain: full demographic combination × region × month.",
+        "tags": {"quality_tier": "gold", "domain": "customer", "owner": "analytics",
+                 "grain": "segment_region_month", "data_product": "nexus_retail"},
+    },
+    f"`{C}`.online_retail_gold.gold_regional_performance": {
+        "comment":
+            "Regional performance dashboard: revenue, orders, returns, net revenue by country and month. "
+            "APAC-East (REG-005) shows elevated return_rate_pct in Q4 2025 (faulty batch impact). "
+            "net_revenue = gross_revenue - refund_total for the same period. "
+            "Grain: region × country × month.",
+        "tags": {"quality_tier": "gold", "domain": "geography", "owner": "analytics",
+                 "key_story": "apac_east_return_spike", "grain": "region_country_month",
+                 "data_product": "nexus_retail"},
+    },
+    f"`{C}`.online_retail_gold.gold_customer_lifetime_value": {
+        "comment":
+            "Customer-level CLV summary — one row per customer with full purchase history aggregated. "
+            "clv_segment: High (total_revenue >= $1000 or Platinum) | Medium ($200-999) | Low (<$200) | Churned (180+ days inactive). "
+            "orders_per_30_days measures purchase frequency normalised to a 30-day window. "
+            "customer_return_rate_pct = returns / orders * 100 for this specific customer. "
+            "Grain: customer_id.",
+        "tags": {"quality_tier": "gold", "domain": "customer", "owner": "analytics",
+                 "grain": "customer_id", "data_product": "nexus_retail"},
+    },
+    f"`{C}`.online_retail_gold.gold_return_analysis": {
+        "comment":
+            "Return analysis by product × reason code × week. "
+            "faulty_batch=TRUE products (FAULT-PHON-*) show return_rate_pct > 40% in Q4 2025 "
+            "versus 4-8% for normal products — the key data quality anomaly signal. "
+            "avg_days_to_return measures lag between order and return initiation. "
+            "Grain: product_id × return_reason_code × return_week.",
+        "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
+                 "key_story": "faulty_batch_return_anomaly", "grain": "product_reason_week",
+                 "data_product": "nexus_retail"},
+    },
+    f"`{C}`.online_retail_gold.gold_daily_revenue": {
+        "comment":
+            "Daily revenue by channel and region — backbone for the AI/BI time-series dashboard. "
+            "new_customers = customers placing their first-ever order on this date. "
+            "returning_customers = customers who have ordered before this date. "
+            "Q4 seasonal spike (Oct-Dec) is clearly visible: ~40-50% higher order volumes. "
+            "Grain: date × channel × region_id.",
+        "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
+                 "grain": "date_channel_region", "data_product": "nexus_retail"},
+    },
+
+    # ── METRICS ──────────────────────────────────────────────────────────────
+    f"`{C}`.online_retail_metrics.mv_category_revenue": {
+        "comment":
+            "Pre-aggregated category revenue Materialized View. "
+            "Source: gold_category_sales — aggregated by category × subcategory × region × month. "
+            "Refreshed on every pipeline run. Used as primary Genie data source for Sales Performance page. "
+            "contains_faulty_products flag surfaces Electronics anomaly in Q4 2025.",
+        "tags": {"quality_tier": "gold", "domain": "product", "genie_page": "sales_performance",
+                 "data_product": "nexus_retail", "owner": "analytics"},
+    },
+    f"`{C}`.online_retail_metrics.mv_customer_demo_sales": {
+        "comment":
+            "Pre-aggregated customer demographic sales Materialized View. "
+            "Source: gold_customer_segment_sales — aggregated by age_bracket × income_bracket × loyalty_tier × region × month. "
+            "Genie data source for Customer Analytics page. "
+            "avg_repeat_rate_pct is the key engagement metric per segment.",
+        "tags": {"quality_tier": "gold", "domain": "customer", "genie_page": "customer_analytics",
+                 "data_product": "nexus_retail", "owner": "analytics"},
+    },
+    f"`{C}`.online_retail_metrics.mv_regional_orders": {
+        "comment":
+            "Pre-aggregated regional order and return performance Materialized View. "
+            "Source: gold_regional_performance. Shows APAC-East Q4 2025 return spike. "
+            "Genie data source for Returns and Quality page. "
+            "return_rate_pct and cancellation_rate_pct are the key quality KPIs.",
+        "tags": {"quality_tier": "gold", "domain": "geography", "genie_page": "returns_quality",
+                 "key_story": "apac_east_return_spike", "data_product": "nexus_retail", "owner": "analytics"},
+    },
+    f"`{C}`.online_retail_metrics.metrics_sales_kpis": {
+        "comment":
+            "Sales KPI Metric View (WITH METRICS LANGUAGE YAML). "
+            "Source: gold_daily_revenue. Dimensions: Sale Month, Sale Quarter, Channel, Region, Super Region. "
+            "Measures: Gross Revenue, Order Count, Avg Order Value, Unique Customers, New Customers, Returning Customers. "
+            "Query using MEASURE() function. Genie: Sales Performance page.",
+        "tags": {"quality_tier": "gold", "domain": "transaction", "semantic_layer": "metric_view",
+                 "genie_page": "sales_performance", "data_product": "nexus_retail", "owner": "analytics"},
+    },
+    f"`{C}`.online_retail_metrics.metrics_customer_kpis": {
+        "comment":
+            "Customer KPI Metric View (WITH METRICS LANGUAGE YAML). "
+            "Source: mv_customer_demo_sales. Dimensions: Age Bracket, Income Bracket, Loyalty Tier, Acquisition Channel, Region, Month. "
+            "Measures: Revenue, Customer Count, Avg Order Value, Repeat Purchase Rate. "
+            "Query using MEASURE() function. Genie: Customer Analytics page.",
+        "tags": {"quality_tier": "gold", "domain": "customer", "semantic_layer": "metric_view",
+                 "genie_page": "customer_analytics", "data_product": "nexus_retail", "owner": "analytics"},
+    },
+    f"`{C}`.online_retail_metrics.metrics_product_kpis": {
+        "comment":
+            "Product/Returns KPI Metric View (WITH METRICS LANGUAGE YAML). "
+            "Source: gold_return_analysis. Dimensions: Category, Subcategory, Return Reason, Faulty Batch, Return Month. "
+            "Measures: Return Count, Total Refund, Return Rate. "
+            "FAULT-PHON-* products show Return Rate > 40%% in Q4 2025 (normal = 4-8%%). "
+            "Query using MEASURE() function. Genie: Returns and Quality page.",
+        "tags": {"quality_tier": "gold", "domain": "product", "semantic_layer": "metric_view",
+                 "genie_page": "returns_quality", "key_story": "faulty_batch_anomaly",
+                 "data_product": "nexus_retail", "owner": "analytics"},
+    },
+}
+
+# ── Column-level tags for PII columns ─────────────────────────────────────────
+PII_COLUMN_TAGS = {
+    f"`{C}`.online_retail_bronze.bronze_customers": {
+        "full_name":    {"pii": "direct", "pii_type": "full_name",    "regulatory": "gdpr"},
+        "email":        {"pii": "direct", "pii_type": "email",        "regulatory": "gdpr"},
+        "phone":        {"pii": "direct", "pii_type": "phone",        "regulatory": "gdpr"},
+        "date_of_birth":{"pii": "direct", "pii_type": "date_of_birth","regulatory": "gdpr"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_customer_addresses": {
+        "address_line1":{"pii": "direct", "pii_type": "address",      "regulatory": "gdpr"},
+        "postcode":     {"pii": "direct", "pii_type": "postcode",     "regulatory": "gdpr"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_customer_demographics": {
+        "annual_income_usd":{"pii": "quasi", "pii_type": "financial", "regulatory": "gdpr"},
+    },
+    f"`{C}`.online_retail_silver.silver_dim_customers": {
+        "full_name":         {"pii": "direct",   "pii_type": "full_name",    "mask_applied": "true", "regulatory": "gdpr"},
+        "email":             {"pii": "direct",   "pii_type": "email",        "mask_applied": "true", "regulatory": "gdpr"},
+        "phone":             {"pii": "direct",   "pii_type": "phone",        "mask_applied": "true", "regulatory": "gdpr"},
+        "date_of_birth":     {"pii": "direct",   "pii_type": "date_of_birth","mask_applied": "true", "regulatory": "gdpr"},
+        "annual_income_usd": {"pii": "quasi",    "pii_type": "financial",    "mask_applied": "false","regulatory": "gdpr"},
+    },
+}
+
+# ── Main ─────────────────────────────────────────────────────────────────────
+
+def main():
+    print(f"\n{'='*60}")
+    print(f"NexusRetail Governance Setup")
+    print(f"  Catalog   : {CATALOG}")
+    print(f"  Warehouse : {WAREHOUSE_ID}")
+    print(f"  Owner     : {OWNER_USER}")
+    print(f"{'='*60}\n")
+
+    # 1. PII column mask functions
+    print("1. PII column mask functions...")
+    sql("mask_full_name", f"""
+CREATE OR REPLACE FUNCTION `{C}`.online_retail_silver.mask_full_name(raw_name STRING)
   RETURNS STRING
-  COMMENT 'PII mask: first initial only for non-owner. Full value for {OWNER_USER}.'
+  COMMENT 'PII mask: first initial + *** for non-owner. Full name for {OWNER_USER} only. GDPR Art.4(1).'
   RETURN CASE WHEN current_user() = '{OWNER_USER}' THEN raw_name
               ELSE CONCAT(LEFT(raw_name,1),'***') END
 """)
-
-run("mask_email", f"""
-CREATE OR REPLACE FUNCTION `{CATALOG}`.online_retail_silver.mask_email(raw_email STRING)
+    sql("mask_email", f"""
+CREATE OR REPLACE FUNCTION `{C}`.online_retail_silver.mask_email(raw_email STRING)
   RETURNS STRING
-  COMMENT 'PII mask: ***@domain.com for non-owner. Full email for {OWNER_USER}.'
+  COMMENT 'PII mask: ***@domain.com for non-owner. Full email for {OWNER_USER} only.'
   RETURN CASE WHEN current_user() = '{OWNER_USER}' THEN raw_email
               ELSE CONCAT('***@', ELEMENT_AT(SPLIT(raw_email,'@'),2)) END
 """)
-
-run("mask_phone", f"""
-CREATE OR REPLACE FUNCTION `{CATALOG}`.online_retail_silver.mask_phone(raw_phone STRING)
+    sql("mask_phone", f"""
+CREATE OR REPLACE FUNCTION `{C}`.online_retail_silver.mask_phone(raw_phone STRING)
   RETURNS STRING
-  COMMENT 'PII mask: ***-***-XXXX for non-owner. Full number for {OWNER_USER}.'
+  COMMENT 'PII mask: ***-***-XXXX for non-owner. Full number for {OWNER_USER} only.'
   RETURN CASE WHEN current_user() = '{OWNER_USER}' THEN raw_phone
-              ELSE CONCAT('***-***-', RIGHT(raw_phone,4)) END
+              ELSE CONCAT('***-***-',RIGHT(raw_phone,4)) END
 """)
-
-run("mask_date_of_birth", f"""
-CREATE OR REPLACE FUNCTION `{CATALOG}`.online_retail_silver.mask_date_of_birth(dob DATE)
+    sql("mask_date_of_birth", f"""
+CREATE OR REPLACE FUNCTION `{C}`.online_retail_silver.mask_date_of_birth(dob DATE)
   RETURNS DATE
-  COMMENT 'PII mask: truncate to Jan 1 of birth year for non-owner. Full DOB for {OWNER_USER}.'
+  COMMENT 'PII mask: truncates to Jan 1 of birth year for non-owner. GDPR data minimisation.'
   RETURN CASE WHEN current_user() = '{OWNER_USER}' THEN dob
-              ELSE DATE_TRUNC('YEAR', dob) END
+              ELSE DATE_TRUNC('YEAR',dob) END
 """)
 
-# ── Section 2: Apply Column Masks ─────────────────────────────────────────────
-print("\n2. Applying column masks to silver_dim_customers...")
+    # 2. Apply column masks to silver_dim_customers
+    print("\n2. Applying column masks...")
+    for col, fn in [
+        ("full_name",     "mask_full_name"),
+        ("email",         "mask_email"),
+        ("phone",         "mask_phone"),
+        ("date_of_birth", "mask_date_of_birth"),
+    ]:
+        sql(f"mask {col}", f"""
+ALTER TABLE `{C}`.online_retail_silver.silver_dim_customers
+  ALTER COLUMN {col} SET MASK `{C}`.online_retail_silver.{fn}
+""", allow_fail=True)
 
-for col, fn in [
-    ("full_name",     "mask_full_name(full_name)"),
-    ("email",         "mask_email(email)"),
-    ("phone",         "mask_phone(phone)"),
-    ("date_of_birth", "mask_date_of_birth(date_of_birth)"),
-]:
-    run(f"mask {col}", f"""
-ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_customers
-  ALTER COLUMN {col} SET MASK `{CATALOG}`.online_retail_silver.{fn.split('(')[0]}
-  USING COLUMNS ({col})
-    """, allow_fail=True)
+    # 3. Catalog comment
+    print("\n3. Catalog and schema comments...")
+    sql("catalog comment",
+        f"COMMENT ON CATALOG `{C}` IS '{CATALOG_COMMENT}'", allow_fail=True)
 
-# ── Section 3: UC Tags ────────────────────────────────────────────────────────
-print("\n3. Applying UC tags...")
+    for schema_fqn, comment in SCHEMA_COMMENTS.items():
+        sql(f"schema comment {schema_fqn.split('.')[-1]}",
+            f"COMMENT ON SCHEMA {schema_fqn} IS '{comment}'", allow_fail=True)
 
-tag_statements = [
-    ("bronze_customers pii tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_customers SET TAGS ('quality_tier'='bronze','domain'='customer','contains_pii'='true','pii_class'='direct','regulatory'='gdpr','data_product'='nexus_retail')"),
-    ("bronze_customers full_name column tag",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_customers ALTER COLUMN full_name SET TAGS ('pii'='full_name','pii_class'='direct')"),
-    ("bronze_customers email column tag",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_customers ALTER COLUMN email SET TAGS ('pii'='email','pii_class'='direct')"),
-    ("bronze_customers phone column tag",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_customers ALTER COLUMN phone SET TAGS ('pii'='phone','pii_class'='direct')"),
-    ("bronze_customers dob column tag",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_customers ALTER COLUMN date_of_birth SET TAGS ('pii'='date_of_birth','pii_class'='direct')"),
-    ("bronze_orders tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_orders SET TAGS ('quality_tier'='bronze','domain'='transaction','data_product'='nexus_retail')"),
-    ("bronze_invoices tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_invoices SET TAGS ('quality_tier'='bronze','domain'='transaction','dq_known_issue'='null_totals_intentional')"),
-    ("bronze_products tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_products SET TAGS ('quality_tier'='bronze','domain'='product','contains_faulty_batch'='true')"),
-    ("bronze_products faulty_batch column tag",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_products ALTER COLUMN faulty_batch SET TAGS ('governance'='quality_indicator','story'='q3_2025_defect_batch')"),
-    ("bronze_returns tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_bronze.bronze_returns SET TAGS ('quality_tier'='bronze','domain'='transaction','contains_anomaly'='q4_2025_return_spike')"),
-    ("silver_dim_customers tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_customers SET TAGS ('quality_tier'='silver','domain'='customer','contains_pii'='true','pii_class'='direct','regulatory'='gdpr','pii_masked'='true','data_product'='nexus_retail')"),
-    ("silver_fact_orders tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_fact_orders SET TAGS ('quality_tier'='silver','domain'='transaction','data_product'='nexus_retail')"),
-    ("silver_fact_invoices tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_fact_invoices SET TAGS ('quality_tier'='silver','domain'='transaction','dq_note'='null_totals_dropped')"),
-    ("silver_fact_returns tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_fact_returns SET TAGS ('quality_tier'='silver','domain'='transaction','contains_anomaly'='q4_2025_return_spike')"),
-    ("silver_dq_quarantine tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dq_quarantine SET TAGS ('quality_tier'='silver','domain'='data_quality','alert_on'='nonzero_row_count')"),
-    ("silver_dim_products tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_products SET TAGS ('quality_tier'='silver','domain'='product','contains_faulty_batch'='true')"),
-    ("gold_category_sales tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_category_sales SET TAGS ('quality_tier'='gold','domain'='product','owner'='analytics','grain'='category_subcategory_region_month')"),
-    ("gold_customer_segment_sales tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_customer_segment_sales SET TAGS ('quality_tier'='gold','domain'='customer','owner'='analytics')"),
-    ("gold_regional_performance tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_regional_performance SET TAGS ('quality_tier'='gold','domain'='geography','key_story'='apac_east_return_spike')"),
-    ("gold_customer_lifetime_value tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_customer_lifetime_value SET TAGS ('quality_tier'='gold','domain'='customer','grain'='customer_id')"),
-    ("gold_return_analysis tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_return_analysis SET TAGS ('quality_tier'='gold','domain'='transaction','key_story'='faulty_batch_return_anomaly')"),
-    ("gold_daily_revenue tags",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_daily_revenue SET TAGS ('quality_tier'='gold','domain'='transaction','grain'='date_channel_region')"),
-]
+    # 4. Table comments, tags, column comments
+    print("\n4. Table comments and tags...")
+    # Determine which tables are MVs/Views (can't do ALTER COLUMN on them)
+    MV_TYPES = {"MATERIALIZED_VIEW", "VIEW", "METRIC_VIEW"}
 
-for label, sql in tag_statements:
-    run(label, sql, allow_fail=True)
+    for full_name, meta in TABLE_METADATA.items():
+        table_comment = meta.get("comment", "").replace("'", "\\'")
+        # Apply table comment
+        sql(f"comment {full_name.split('.')[-1].strip('`')}",
+            f"COMMENT ON TABLE {full_name} IS '{table_comment}'", allow_fail=True)
 
-# ── Section 4: Table & Column Comments ───────────────────────────────────────
-print("\n4. Setting table and column comments...")
+        # Apply table tags
+        if meta.get("tags"):
+            apply_tags("TABLE", full_name, meta["tags"])
 
-comments = [
-    ("silver_dim_customers full_name comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_customers ALTER COLUMN full_name COMMENT 'PII:direct — Masked for non-owner roles: shows first initial only. GDPR Art.4(1).'"),
-    ("silver_dim_customers email comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_customers ALTER COLUMN email COMMENT 'PII:direct — Masked: ***@domain.com for non-owner. 3 duplicates captured in silver_dq_quarantine.'"),
-    ("silver_dim_customers phone comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_customers ALTER COLUMN phone COMMENT 'PII:direct — Masked: ***-***-XXXX for non-owner.'"),
-    ("silver_dim_customers dob comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_customers ALTER COLUMN date_of_birth COMMENT 'PII:direct — Masked to year (Jan 1) for non-owner. GDPR data minimisation.'"),
-    ("silver_dim_products faulty_batch comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_dim_products ALTER COLUMN faulty_batch COMMENT 'TRUE for 8 FAULT-PHON-* products (product_idx 4-11) from Q3 2025 defective batch. Root cause of Q4 2025 return spike in APAC-East.'"),
-    ("silver_fact_invoices invoice_total comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_silver.silver_fact_invoices ALTER COLUMN invoice_total COMMENT 'Invoice total USD. ~52 NULL records from bronze dropped by expect_or_drop at silver ingestion (visible in silver_dq_quarantine).'"),
-    ("gold_return_analysis faulty_batch comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_return_analysis ALTER COLUMN faulty_batch COMMENT 'TRUE for 8 FAULT-PHON-* SKUs. Filter on this to isolate Q3 2025 defect batch story. Return rate >40% vs 4-8% normal.'"),
-    ("gold_regional_performance return_rate comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_regional_performance ALTER COLUMN return_rate_pct COMMENT 'Returns/orders %. APAC-East (REG-005) shows elevated rate in Q4 2025 from faulty batch exposure.'"),
-    ("gold_customer_lifetime_value clv_segment comment",
-     f"ALTER TABLE `{CATALOG}`.online_retail_gold.gold_customer_lifetime_value ALTER COLUMN clv_segment COMMENT 'CLV tier: High (revenue>=\\$1000 or Platinum) | Medium (\\$200-999) | Low (<\\$200) | Churned (180+ days inactive).'"),
-]
+        # Apply column comments (Streaming Tables only)
+        schema = full_name.split(".")[1].strip("`")
+        is_mv = (schema in ("online_retail_gold", "online_retail_metrics"))
+        if not is_mv and meta.get("columns"):
+            for col_name, col_comment_text in meta["columns"].items():
+                comment_escaped = col_comment_text.replace("'", "\\'")
+                col_comment(full_name, col_name, comment_escaped)
 
-for label, sql in comments:
-    run(label, sql, allow_fail=True)
+    # 5. PII column tags
+    print("\n5. PII column tags...")
+    for table, columns in PII_COLUMN_TAGS.items():
+        for col_name, tags in columns.items():
+            col_tag(table, col_name, tags)
 
-# ── Section 5: Schema Comments ────────────────────────────────────────────────
-print("\n5. Setting schema comments...")
+    # 6. Grants
+    print("\n6. Grants...")
+    for stmt in [
+        f"GRANT USE CATALOG ON CATALOG `{C}` TO `{OWNER_USER}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_bronze TO `{OWNER_USER}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_silver TO `{OWNER_USER}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_gold TO `{OWNER_USER}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_metrics TO `{OWNER_USER}`",
+        f"GRANT SELECT ON SCHEMA `{C}`.online_retail_silver TO `{OWNER_USER}`",
+        f"GRANT SELECT ON SCHEMA `{C}`.online_retail_gold TO `{OWNER_USER}`",
+        f"GRANT SELECT ON SCHEMA `{C}`.online_retail_metrics TO `{OWNER_USER}`",
+    ]:
+        sql(f"grant {stmt.split('ON')[1].strip()[:50]}", stmt, allow_fail=True)
 
-schema_comments = [
-    ("online_retail_raw comment",    f"COMMENT ON SCHEMA `{CATALOG}`.online_retail_raw IS 'NexusRetail raw source data — 20 Parquet tables in UC Volume /raw_data/. Landing zone for SDP Auto Loader bronze ingestion. Contains unmasked PII.'"),
-    ("online_retail_bronze comment", f"COMMENT ON SCHEMA `{CATALOG}`.online_retail_bronze IS 'NexusRetail bronze — Auto Loader streaming tables from UC Volume. Raw fidelity, schema enforced, PK expectations. PII present in customer tables.'"),
-    ("online_retail_silver comment", f"COMMENT ON SCHEMA `{CATALOG}`.online_retail_silver IS 'NexusRetail silver — cleansed, validated streaming tables. PII masked via UC column masks. Quarantine table captures DQ violations. Quality tier: silver.'"),
-    ("online_retail_gold comment",   f"COMMENT ON SCHEMA `{CATALOG}`.online_retail_gold IS 'NexusRetail gold — business-ready materialized view aggregations. No PII. 6 tables: category sales, customer segments, regional performance, CLV, return analysis, daily revenue.'"),
-]
-for label, sql in schema_comments:
-    run(label, sql, allow_fail=True)
+    print(f"\n{'='*60}")
+    print("Governance setup complete.")
+    print(f"  Catalog : https://YOUR-WORKSPACE/#explore/data/{C}")
+    print(f"{'='*60}")
 
-print("\n═══ Governance setup complete ═══")
-print("""
-Pipeline URL: https://e2-demo-field-eng.cloud.databricks.com/#joblist/pipelines/d8de9ffb-3723-4d56-a65c-e3d183c7caf8
-Catalog:      https://e2-demo-field-eng.cloud.databricks.com/explore/data/gurpreet_sethi
-""")
+
+if __name__ == "__main__":
+    main()
