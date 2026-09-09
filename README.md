@@ -2,9 +2,7 @@
 
 A full-stack Databricks demonstration of **data governance**, **data quality**, and **ontology-driven analytics** built on a synthetic global online retail dataset. The solution spans the complete Databricks data platform: Lakeflow Spark Declarative Pipelines (SDP), Unity Catalog governance, metric views, and Genie One natural language analytics.
 
-**Workspace:** `e2-demo-field-eng.cloud.databricks.com`  
-**Catalog:** `gurpreet_sethi`  
-**Pipeline:** `NexusRetail Analytics Pipeline` (`d8de9ffb-3723-4d56-a65c-e3d183c7caf8`)
+Deployable to **any Databricks workspace** — no hardcoded workspace URLs or IDs. Configure once in `databricks.local.yml` (gitignored) and run five bundle jobs to stand up the full demo.
 
 ---
 
@@ -21,6 +19,7 @@ A full-stack Databricks demonstration of **data governance**, **data quality**, 
 - [Deployment Guide](#deployment-guide)
 - [Demo Walkthrough](#demo-walkthrough)
 - [Project Structure](#project-structure)
+- [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -414,7 +413,13 @@ gurpreet_sethi.online_retail_gold.gold_customer_lifetime_value
 
 ### Automated Setup
 
-Upload `setup/02_genie_setup.py` as a Databricks workspace notebook and run it — it creates the Genie space, adds data sources, and populates 8 knowledge snippets that pre-wire domain semantics (metric definitions, return rate thresholds, faulty batch context, date conventions, region hierarchy).
+Run the Genie setup as a bundle job — it creates the space, domain, 3 pages, 8 knowledge snippets, and wires all 12 data sources automatically:
+
+```bash
+databricks bundle run nexus_retail_genie_setup -t dev
+```
+
+A complete manual setup guide is also printed at the end of the notebook for any API endpoints still in preview.
 
 ---
 
@@ -422,156 +427,171 @@ Upload `setup/02_genie_setup.py` as a Databricks workspace notebook and run it �
 
 ### Prerequisites
 
-- Databricks CLI ≥ v1.0.0 (`databricks --version`)
-- An active CLI profile authenticated to your target workspace (`databricks auth profiles`)
-- A Unity Catalog **catalog** that already exists (your user catalog is fine)
-- A running **SQL warehouse** — find the ID in Workspace → SQL Warehouses → `<name>` → Connection Details (last path segment after `/warehouses/`)
-- `databricks-sdk` Python package installed (`pip install databricks-sdk`)
+| Requirement | Check |
+|---|---|
+| Databricks CLI ≥ v1.0.0 | `databricks --version` |
+| Authenticated CLI profile for your workspace | `databricks auth profiles` |
+| A Unity Catalog catalog that already exists | Your user catalog works |
+| A running SQL warehouse | Workspace → SQL Warehouses → Connection Details |
 
 ### Step 0 — Configure Your Workspace
 
-The bundle has **no hardcoded workspace URL or IDs**. Create your local config file from the provided template:
+The bundle has **no hardcoded workspace URL or IDs**. Create your local config file:
 
 ```bash
 cp databricks.local.yml.example databricks.local.yml
 ```
 
-Edit `databricks.local.yml` with your values:
+Edit `databricks.local.yml` — three values to fill in:
 
 ```yaml
 targets:
   dev:
     workspace:
       host: https://YOUR-WORKSPACE.cloud.databricks.com
+      profile: your-cli-profile-name   # from ~/.databrickscfg
     variables:
-      catalog: your_catalog_name      # must already exist
-      warehouse_id: your_warehouse_id # from SQL Warehouse → Connection Details
+      catalog:      your_catalog_name       # must already exist
+      warehouse_id: your_warehouse_id       # SQL Warehouses → Connection Details
+      owner_user:   your.email@company.com  # gets unmasked PII access
 ```
 
-`databricks.local.yml` is gitignored — it never gets committed. It is merged on top of `databricks.yml` automatically by the CLI.
+`databricks.local.yml` is **gitignored** — it never gets committed. DABs merges it on top of `databricks.yml` automatically via the `include` directive.
 
-> **Switching workspaces later?** Delete `.databricks/` (the local bundle Terraform state) before your first deploy on the new workspace. Stale state contains resource IDs from the previous workspace that don't exist in the new one:
+> **Switching workspaces?** Delete `.databricks/` before deploying to a new workspace — it holds Terraform state tied to the previous workspace's resource IDs:
 > ```bash
 > rm -rf .databricks/
+> databricks bundle deploy -t dev
 > ```
+>
+> **workspace_id mismatch error?** If your `~/.databrickscfg` profile has an explicit `workspace_id` field, remove it. The Databricks Terraform provider v1.115.0+ validates the hardcoded ID against your auth token and fails if they differ.
 
-### Step 1 — Validate & Deploy the Bundle
+### Step 1 — Deploy the Bundle
 
 ```bash
-# --profile is optional if databricks.local.yml sets the host
 databricks bundle validate
 databricks bundle deploy -t dev
 ```
 
-The deploy creates the SDP pipeline and data generation job in your workspace. No data is written yet.
+Creates the pipeline, all four jobs, and uploads all notebooks to the workspace.
 
-### Step 2 — Generate Raw Data (~20 min on serverless)
+### Step 2 — Generate Raw Data (~20 min)
 
 ```bash
 databricks bundle run nexus_retail_generate_data -t dev
 ```
 
-This runs `setup/01_generate_raw_data.py` as a serverless notebook job. It:
-1. Creates `online_retail_raw` schema and UC Volume
-2. Generates 20 Parquet tables (~15K rows total)
-3. Embeds the data quality story (NULL invoices, duplicate emails, faulty batch orders)
+Runs `setup/01_generate_raw_data.py` on serverless. Creates the `online_retail_raw` schema, UC Volume, and 20 Parquet tables (~15K rows) with the embedded quality story.
 
-Monitor in the **Jobs** UI — the run URL is printed to the CLI output.
-
-### Step 3 — Run the SDP Pipeline (~3 min on serverless)
+### Step 3 — Run the SDP Pipeline (~3 min)
 
 ```bash
 databricks bundle run nexus_retail_pipeline -t dev
 ```
 
-This creates all 32 tables (bronze → silver → gold) including the DQ quarantine MV.
+Creates all 32 Delta tables — 18 bronze Streaming Tables, 8 silver datasets, 6 gold Materialized Views — including the DQ quarantine MV with 139 quarantined records.
 
-To re-run after data changes:
+To re-run from scratch:
 ```bash
-# Get pipeline ID from deployment output or the Pipelines UI, then:
 databricks pipelines start-update <pipeline_id> --full-refresh
 ```
 
-> ⚠️ `--full-refresh` reprocesses all source files from scratch. Safe here since the source is static Volume Parquet files, not a live Kafka topic.
+> `--full-refresh` is safe here — the source is static Volume Parquet files, not a live stream.
 
 ### Step 4 — Apply Governance
 
-Update the two variables in `governance/run_governance.py` to match your workspace, then run:
-
-```python
-WAREHOUSE  = "your_warehouse_id"   # same as databricks.local.yml
-OWNER_USER = "your.email@company.com"
+```bash
+databricks bundle run nexus_retail_governance -t dev
 ```
+
+Runs `governance/run_governance.py` on serverless. In one job it:
+- Creates 4 PII column mask functions and applies them to `silver_dim_customers`
+- Sets `COMMENT ON CATALOG` and `COMMENT ON SCHEMA` for all 5 schemas
+- Applies `COMMENT ON TABLE` to all 32 tables with grain, quality notes, and lineage context
+- Applies column-level comments on every key column across bronze + silver tables
+- Applies UC tags (`quality_tier`, `domain`, `contains_pii`, `pii_classification`, `regulatory`, `owner`, `data_product`, etc.) to every table and PII column
+- Creates the `online_retail_metrics` schema with 3 UC Materialized Views and 3 Metric Views
+
+### Step 5 — Set Up Genie One
 
 ```bash
-python3 governance/run_governance.py
+databricks bundle run nexus_retail_genie_setup -t dev
 ```
 
-This applies PII column masks, UC tags, table/column comments, and creates the metrics schema with UC MVs and Metric Views.
+Runs `setup/02_genie_setup.py` on serverless. Creates the "NexusRetail Analytics" Genie space with:
+- 12 data sources (gold + metrics tables)
+- "Online Retail Analytics" domain
+- 3 pages (Sales Performance, Customer Analytics, Returns & Quality)
+- 8 knowledge snippets covering data model, revenue definition, faulty batch story, CLV segments, regions, dates, metric view syntax, and DQ context
+- Space instructions (system prompt) for accurate NL query handling
 
-### Step 5 — Genie One
+---
 
-Upload `setup/02_genie_setup.py` to your workspace as a notebook and run it. For manual setup, follow the guide printed at the end of the notebook.
-
-### Troubleshooting
+## Troubleshooting
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| `Error: resource not found` on deploy | Stale `.databricks/` state from another workspace | `rm -rf .databricks/` then redeploy |
-| `variable 'catalog' is required` | `databricks.local.yml` not created | Copy from `.example` and fill in your values |
-| `variable 'warehouse_id' is required` | Same as above | Same fix |
-| Pipeline fails at `WAITING_FOR_RESOURCES` | Code analysis error — check pipeline events | `databricks pipelines list-pipeline-events <id>` |
-| `%pip install` in notebook fails | Not applicable — silver layer uses native SDP expectations only | No action needed |
+| `workspace_id mismatch` on deploy | Hardcoded `workspace_id` in `~/.databrickscfg` profile conflicts with auth token | Open `~/.databrickscfg`, find the profile section, delete the `workspace_id = ...` line |
+| `Error: resource not found` on deploy | Stale `.databricks/` Terraform state from a previous workspace | `rm -rf .databricks/` then redeploy |
+| `variable 'catalog' is required` | `databricks.local.yml` not created | `cp databricks.local.yml.example databricks.local.yml` and fill in values |
+| `variable 'owner_user' is required` | Same — new variable added | Same fix — add `owner_user: your.email@co.com` |
+| Pipeline fails `WAITING_FOR_RESOURCES` | Code analysis error in pipeline notebooks | `databricks pipelines list-pipeline-events <pipeline_id>` |
+| Governance tags fail with `INVALID_PARAMETER_VALUE` | Tag keys not pre-registered in this workspace | Apply remaining tags manually via Catalog Explorer UI → Tags |
+| Column comment fails on gold/metrics tables | `ALTER COLUMN` not supported on Materialized Views or Metric Views | Expected — governance script skips MVs automatically; MV comments are set via `COMMENT ON TABLE` |
 
 ---
 
 ## Demo Walkthrough
 
+Replace `<catalog>` in all queries below with your catalog name (the value of `catalog` in `databricks.local.yml`).
+
 ### 1. Data Quality — The Quarantine Story
 
 ```sql
--- Show the 3 quality issues caught by the quarantine MV
+-- Show all quality violations caught by the DQ quarantine MV
 SELECT source_table, dq_rule, severity, COUNT(*) AS record_count
-FROM gurpreet_sethi.online_retail_silver.silver_dq_quarantine
+FROM <catalog>.online_retail_silver.silver_dq_quarantine
 GROUP BY 1, 2, 3
-ORDER BY 3, 2;
+ORDER BY severity, dq_rule;
 ```
 
 Expected output:
 ```
 source_table        dq_rule                    severity  record_count
-bronze_invoices     invoice_total_null         error     52
-bronze_payments     failed_payment             warn      43
-bronze_returns      high_return_rate_product   warn      41
-bronze_customers    duplicate_email            warn      3
+bronze_invoices     invoice_total_null         error     ~52
+bronze_payments     failed_payment             warn      ~43
+bronze_returns      high_return_rate_product   warn       41
+bronze_customers    duplicate_email            warn        3
 ```
 
-Show the **pipeline graph** in the Databricks UI — the `silver_fact_invoices` node will show `52 rows dropped` on the `invoice_total not null` expectation.
+Open the **Pipeline UI** — the `silver_fact_invoices` node shows `~52 rows dropped` on the `invoice_total not null` expectation. The dropped rows appear in the quarantine table, not in silver.
 
-### 2. PII Masking — The Governance Story
+### 2. Governance — Comments, Tags & PII Masking
 
+Open **Catalog Explorer → `<catalog>` → online_retail_silver → silver_dim_customers**:
+- Every column has a **Comment** describing its business meaning, PII classification, and GDPR basis
+- PII columns (`full_name`, `email`, `phone`, `date_of_birth`) show a **lock icon** — column masks are applied
+- The table itself has a **Tags** section showing `quality_tier=silver`, `contains_pii=true`, `regulatory=gdpr`
+
+Run the same query as two different users to see masking in action:
 ```sql
--- As non-owner: masked values
+-- Non-owner sees: G***, ***@domain.com, ***-***-1234, 1980-01-01 (year only)
+-- Owner sees raw values — column masks are transparent to the query
 SELECT customer_id, full_name, email, phone, date_of_birth
-FROM gurpreet_sethi.online_retail_silver.silver_dim_customers
+FROM <catalog>.online_retail_silver.silver_dim_customers
 LIMIT 5;
-
--- As owner (gurpreet.sethi@databricks.com): raw values
--- Same query, different result — column masks are transparent
 ```
-
-Navigate to **Catalog Explorer → silver_dim_customers → Columns** to show the lock icons on masked columns with their GDPR basis comments.
 
 ### 3. Return Anomaly — The Business Story
 
 ```sql
--- Monthly return trend: Q4 2025 spike is visible
+-- Monthly return trend: Q4 2025 spike clearly visible
 SELECT
-  DATE_FORMAT(return_week, 'yyyy-MM') AS month,
-  CASE WHEN faulty_batch THEN 'FAULT-PHON-* (defective)' ELSE 'Normal Products' END AS product_type,
-  SUM(return_count) AS returns,
-  ROUND(AVG(return_rate_pct), 1) AS avg_return_rate_pct
-FROM gurpreet_sethi.online_retail_gold.gold_return_analysis
+  DATE_FORMAT(return_week, 'yyyy-MM')                                      AS month,
+  CASE WHEN faulty_batch THEN 'FAULT-PHON-* (defective)' ELSE 'Normal' END AS product_type,
+  SUM(return_count)                                                         AS returns,
+  ROUND(AVG(return_rate_pct), 1)                                            AS avg_return_rate_pct
+FROM <catalog>.online_retail_gold.gold_return_analysis
 WHERE return_week >= DATE '2025-07-01'
 GROUP BY 1, 2
 ORDER BY 1, 2;
@@ -580,26 +600,35 @@ ORDER BY 1, 2;
 ### 4. Metric Views — The Semantic Layer Story
 
 ```sql
--- Repeat purchase rate by loyalty tier (via metric view)
+-- Repeat purchase rate by loyalty tier
 SELECT `Loyalty Tier`, MEASURE(`Repeat Purchase Rate`) AS repeat_rate
-FROM gurpreet_sethi.online_retail_metrics.metrics_customer_kpis
-GROUP BY ALL
-ORDER BY ALL;
+FROM <catalog>.online_retail_metrics.metrics_customer_kpis
+GROUP BY ALL ORDER BY ALL;
 
--- Revenue breakdown by region and quarter
+-- Revenue by region and quarter
 SELECT `Sale Quarter`, `Region`, MEASURE(`Gross Revenue`) AS revenue
-FROM gurpreet_sethi.online_retail_metrics.metrics_sales_kpis
+FROM <catalog>.online_retail_metrics.metrics_sales_kpis
 WHERE YEAR(`Sale Quarter`) IN (2025, 2026)
+GROUP BY ALL ORDER BY ALL;
+
+-- Return rate: faulty batch vs normal
+SELECT `Return Month`, `Faulty Batch`, MEASURE(`Return Rate`) AS return_rate
+FROM <catalog>.online_retail_metrics.metrics_product_kpis
+WHERE `Return Month` >= DATE '2025-07-01'
 GROUP BY ALL ORDER BY ALL;
 ```
 
 ### 5. Genie — The Natural Language Story
 
-Open the **NexusRetail Analytics** Genie space and ask:
+Open the **NexusRetail Analytics** Genie space (created by `nexus_retail_genie_setup` job) and try:
 
 > *"Why is the Electronics return rate elevated in Q4 2025?"*
 
-Genie queries `metrics_product_kpis` and surfaces the `FAULT-PHON-*` spike. The knowledge snippet about the faulty batch ensures it answers with business context, not just raw numbers.
+> *"Which loyalty tier has the highest repeat purchase rate?"*
+
+> *"Show me revenue by region for Q4 2025 vs Q4 2024"*
+
+Genie queries the metric views using the 8 knowledge snippets as context — it understands the faulty batch story, CLV segments, region hierarchy, and `MEASURE()` syntax automatically.
 
 ---
 
@@ -608,40 +637,65 @@ Genie queries `metrics_product_kpis` and surfaces the `FAULT-PHON-*` spike. The 
 ```
 DQ_UC_Ontology/
 │
-├── databricks.yml                 # DAB bundle config — pipeline + data gen job
+├── databricks.yml                  # DAB bundle — pipeline + 4 jobs. No hardcoded values.
+├── databricks.local.yml            # YOUR workspace config (gitignored — never committed)
+├── databricks.local.yml.example    # Template: copy to databricks.local.yml and fill in 3 values
 │
 ├── dqx_rules/
-│   └── silver_rules.yaml          # 40+ DQ rule definitions (completeness, validity,
-│                                  # uniqueness, referential integrity, statistical)
+│   └── silver_rules.yaml           # 40+ DQ rule definitions (completeness, validity,
+│                                   # uniqueness, referential integrity, statistical)
+│                                   # Used as governance documentation; native SDP expectations
+│                                   # are the runtime enforcement mechanism.
 │
 ├── governance/
-│   ├── 01_column_masks.sql        # UC PII mask functions + GRANT statements
-│   ├── 02_tags_and_comments.sql   # All UC tags + table/column comments
-│   ├── 03_metric_views.sql        # 3 UC MVs + 3 Metric Views (WITH METRICS LANGUAGE YAML)
-│   └── run_governance.py          # SDK runner — executes all governance DDL
+│   ├── 01_column_masks.sql         # PII mask function DDL (reference — run_governance.py executes these)
+│   ├── 02_tags_and_comments.sql    # Tag + comment DDL (reference)
+│   ├── 03_metric_views.sql         # UC MV + Metric View DDL (reference)
+│   └── run_governance.py           # ★ Main governance notebook (bundle job: nexus_retail_governance)
+│                                   #   Applies: PII masks, catalog/schema/table/column comments,
+│                                   #   UC tags on all 32 tables and PII columns, grants,
+│                                   #   and creates the online_retail_metrics schema + objects.
+│                                   #   Reads catalog/warehouse_id/owner_user from job base_parameters.
 │
 ├── setup/
-│   ├── 01_generate_raw_data.py    # Databricks notebook: generates 20-table dataset
-│   │                              # (~20 min on serverless, uses Spark + Faker)
-│   └── 02_genie_setup.py          # Databricks notebook: Genie space + knowledge snippets
+│   ├── 01_generate_raw_data.py     # ★ Raw data notebook (bundle job: nexus_retail_generate_data)
+│   │                               #   Generates 20 Parquet tables (~15K rows) on serverless.
+│   │                               #   Reads catalog from job base_parameters.
+│   └── 02_genie_setup.py           # ★ Genie notebook (bundle job: nexus_retail_genie_setup)
+│                                   #   Creates space, domain, 3 pages, 8 knowledge snippets.
+│                                   #   Reads catalog/warehouse_id from job base_parameters.
 │
 └── src/
-    ├── bronze_layer.py            # 18 Auto Loader Streaming Tables from UC Volume
-    ├── silver_layer.py            # DQ quarantine MV + 7 silver datasets (SDP + native expectations)
-    └── gold_layer.py              # 6 gold Materialized Views (aggregated, Genie-ready)
+    ├── bronze_layer.py             # 18 Auto Loader Streaming Tables (SDP pipeline)
+    ├── silver_layer.py             # DQ quarantine MV + 7 silver tables (native expectations + PII masks)
+    └── gold_layer.py               # 6 gold Materialized Views (CLUSTER BY AUTO, Genie-ready)
 ```
+
+### Bundle Jobs Summary
+
+| Job name | Notebook | What it does | Run order |
+|---|---|---|---|
+| `nexus_retail_generate_data` | `setup/01_generate_raw_data.py` | Generates 20-table raw dataset in UC Volume | 1st |
+| `nexus_retail_pipeline` | `src/bronze_layer.py` + `silver_layer.py` + `gold_layer.py` | SDP pipeline — 32 Delta tables | 2nd |
+| `nexus_retail_governance` | `governance/run_governance.py` | PII masks, tags, comments, metric views | 3rd |
+| `nexus_retail_genie_setup` | `setup/02_genie_setup.py` | Genie space, domain, pages, snippets | 4th |
+
+All jobs receive `catalog`, `warehouse_id`, and `owner_user` from `databricks.local.yml` via DAB variables → `base_parameters`.
 
 ---
 
-## Key URLs (e2-demo-field-eng workspace)
+## Key Workspace Links
 
-| Resource | URL |
+Replace `<host>` with your workspace URL and `<catalog>` with your catalog name.
+
+| Resource | Path |
 |---|---|
-| Pipeline | `#joblist/pipelines/d8de9ffb-3723-4d56-a65c-e3d183c7caf8` |
-| Catalog | `/explore/data/gurpreet_sethi` |
-| Silver schema | `/explore/data/gurpreet_sethi/online_retail_silver` |
-| DQ Quarantine | `/explore/data/gurpreet_sethi/online_retail_silver/silver_dq_quarantine` |
-| Metrics schema | `/explore/data/gurpreet_sethi/online_retail_metrics` |
+| Pipeline | `<host>/#joblist/pipelines/<pipeline_id>` |
+| Catalog Explorer | `<host>/explore/data/<catalog>` |
+| Silver schema | `<host>/explore/data/<catalog>/online_retail_silver` |
+| DQ Quarantine | `<host>/explore/data/<catalog>/online_retail_silver/silver_dq_quarantine` |
+| Metrics schema | `<host>/explore/data/<catalog>/online_retail_metrics` |
+| Genie space | `<host>/genie` (search "NexusRetail Analytics") |
 
 ---
 
