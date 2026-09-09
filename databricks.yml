@@ -72,3 +72,17 @@ resources:
               - faker==24.11.0
               - holidays==0.46
               - python-dateutil
+
+    nexus_retail_genie_setup:
+      name: "NexusRetail — Genie Setup"
+      tasks:
+        - task_key: genie_setup
+          notebook_task:
+            notebook_path: ./setup/02_genie_setup.py
+            base_parameters:
+              catalog: ${var.catalog}
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"

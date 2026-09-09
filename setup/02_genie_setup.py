@@ -21,7 +21,11 @@ from databricks.sdk.service import dashboards
 import json
 
 w = WorkspaceClient()
-CATALOG = "gurpreet_sethi"
+
+# catalog is injected by the DAB job via base_parameters (set in databricks.local.yml).
+# The widget default is a fallback for manual notebook runs only.
+dbutils.widgets.text("catalog", "your_catalog_name")
+CATALOG = dbutils.widgets.get("catalog")
 
 # =============================================================================
 # SECTION 1 — Create Genie Space (Online Retail)
@@ -171,12 +175,12 @@ SAMPLE_QUESTIONS = [
 EXAMPLE_QUESTION_SQLS = [
     {
         "question": "Show category revenue by month for 2025",
-        "sql": """
+        "sql": f"""
 SELECT
   `Sale Month`,
   `Category`,
   MEASURE(`Gross Revenue`) AS revenue
-FROM gurpreet_sethi.online_retail_metrics.metrics_sales_kpis
+FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
 WHERE YEAR(`Sale Month`) = 2025
 GROUP BY ALL
 ORDER BY ALL
@@ -184,24 +188,24 @@ ORDER BY ALL
     },
     {
         "question": "Show return rate by product category and faulty batch",
-        "sql": """
+        "sql": f"""
 SELECT
   `Category`,
   `Faulty Batch`,
   MEASURE(`Return Rate`) AS return_rate
-FROM gurpreet_sethi.online_retail_metrics.metrics_product_kpis
+FROM {CATALOG}.online_retail_metrics.metrics_product_kpis
 GROUP BY ALL
 ORDER BY ALL
 """,
     },
     {
         "question": "Show revenue by loyalty tier",
-        "sql": """
+        "sql": f"""
 SELECT
   `Loyalty Tier`,
   `Month`,
   MEASURE(`Revenue`) AS revenue
-FROM gurpreet_sethi.online_retail_metrics.metrics_customer_kpis
+FROM {CATALOG}.online_retail_metrics.metrics_customer_kpis
 GROUP BY ALL
 ORDER BY ALL
 """,
