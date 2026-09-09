@@ -344,7 +344,7 @@ print(f"Data sources: {len(DATA_SOURCES)} tables/views")
 print(f"Knowledge snippets: {len(KNOWLEDGE_SNIPPETS)}")
 print(f"Sample Questions: {len(SAMPLE_QUESTIONS)}")
 print(f"Example SQLs: {len(EXAMPLE_QUESTION_SQLS)}")
-print(f"Pages: {len})
+print(f"Pages: {len(PAGES)})
 
 # COMMAND ----------
 
