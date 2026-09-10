@@ -52,14 +52,29 @@ print(f"  Range   : {START_DATE.date()} → {END_DATE.date()}")
 print(f"  Orders  : {N_ORDERS}  |  Customers: {N_CUSTOMERS}  |  Products: {N_PRODUCTS}")
 
 # COMMAND ----------
-# ── Infrastructure ─────────────────────────────────────────────────────────
-spark.sql(f"""
-  CREATE SCHEMA IF NOT EXISTS `{CATALOG}`.`{RAW_SCHEMA}`
-  COMMENT 'NexusRetail raw source data — synthetic 24-month online retail dataset.
-Serves as landing zone for SDP Auto Loader ingestion into bronze layer.'
-""")
+# ── Infrastructure — all schemas created here so downstream jobs never hit "schema not found"
+ALL_SCHEMAS = {
+    f"`{CATALOG}`.`online_retail_raw`":
+        "NexusRetail raw source data — synthetic 24-month online retail dataset. "
+        "Landing zone for SDP Auto Loader ingestion into bronze layer.",
+    f"`{CATALOG}`.`online_retail_bronze`":
+        "NexusRetail bronze layer — Auto Loader streaming tables from UC Volume. "
+        "Raw fidelity, schema enforced, metadata columns added.",
+    f"`{CATALOG}`.`online_retail_silver`":
+        "NexusRetail silver layer — cleansed, DQX-validated streaming tables. "
+        "PII masked via UC column masks. Quarantine table captures quality violations.",
+    f"`{CATALOG}`.`online_retail_gold`":
+        "NexusRetail gold layer — business-ready Materialized View aggregations. No PII.",
+    f"`{CATALOG}`.`online_retail_metrics`":
+        "NexusRetail semantic/metrics layer — UC Materialized Views and Metric Views "
+        "(WITH METRICS LANGUAGE YAML). Genie One data sources. No PII.",
+}
+for schema_fqn, comment in ALL_SCHEMAS.items():
+    spark.sql(f"CREATE SCHEMA IF NOT EXISTS {schema_fqn} COMMENT '{comment}'")
+    print(f"✓ Schema ready: {schema_fqn}")
+
 spark.sql(f"CREATE VOLUME IF NOT EXISTS `{CATALOG}`.`{RAW_SCHEMA}`.`{VOLUME}`")
-print(f"✓ Schema and volume ready")
+print(f"✓ Volume ready: /Volumes/{CATALOG}/{RAW_SCHEMA}/{VOLUME}")
 
 # Drop any staging tables from a previous (partial) run — ensures idempotency
 STAGING_TABLES = ["stg_products","stg_customers","stg_orders","stg_order_items",
