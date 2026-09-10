@@ -683,8 +683,200 @@ ALTER TABLE `{C}`.online_retail_silver.silver_dim_customers
   ALTER COLUMN {col} SET MASK `{C}`.online_retail_silver.{fn}
 """, allow_fail=True)
 
-    # 3. Catalog comment
-    print("\n3. Catalog and schema comments...")
+    # 3. Create metrics schema objects (UC MVs + Metric Views)
+    #    Must run BEFORE table comments/tags — can't tag tables that don't exist yet.
+    print("\n3. Creating online_retail_metrics objects...")
+
+    sql("mv_category_revenue", f"""
+CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_category_revenue
+COMMENT 'Pre-aggregated category revenue with return rates. Refreshed on pipeline run.
+Source for Genie Sales Performance page. Grain: category x subcategory x region x month.'
+TBLPROPERTIES ('quality_tier'='gold','domain'='product','genie_page'='sales_performance','data_product'='nexus_retail')
+AS
+SELECT category_id, category_name, subcategory_name, region_name, super_region, sale_month,
+  SUM(order_count) AS order_count, SUM(units_sold) AS units_sold,
+  SUM(gross_revenue) AS gross_revenue, SUM(net_revenue) AS net_revenue,
+  SUM(total_discount) AS total_discount, SUM(return_count) AS return_count,
+  SUM(refund_total) AS refund_total,
+  ROUND(AVG(return_rate_pct),2) AS avg_return_rate_pct,
+  MAX(contains_faulty_products) AS contains_faulty_products
+FROM `{C}`.online_retail_gold.gold_category_sales
+GROUP BY category_id, category_name, subcategory_name, region_name, super_region, sale_month
+""")
+
+    sql("mv_customer_demo_sales", f"""
+CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_customer_demo_sales
+COMMENT 'Pre-aggregated customer demographic sales. Refreshed on pipeline run.
+Source for Genie Customer Analytics page. Grain: age_bracket x income_bracket x loyalty_tier x region x month.'
+TBLPROPERTIES ('quality_tier'='gold','domain'='customer','genie_page'='customer_analytics','data_product'='nexus_retail')
+AS
+SELECT age_bracket, income_bracket, loyalty_tier, acquisition_channel, customer_type,
+  region_name, super_region, sale_month,
+  SUM(unique_customers) AS unique_customers, SUM(order_count) AS order_count,
+  SUM(revenue) AS revenue, ROUND(AVG(avg_order_value),2) AS avg_order_value,
+  SUM(repeat_customers) AS repeat_customers,
+  ROUND(AVG(repeat_purchase_rate_pct),2) AS avg_repeat_rate_pct,
+  ROUND(AVG(revenue_per_customer),2) AS avg_revenue_per_customer
+FROM `{C}`.online_retail_gold.gold_customer_segment_sales
+GROUP BY age_bracket, income_bracket, loyalty_tier, acquisition_channel, customer_type,
+         region_name, super_region, sale_month
+""")
+
+    sql("mv_regional_orders", f"""
+CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_regional_orders
+COMMENT 'Pre-aggregated regional order and return performance. Refreshed on pipeline run.
+Shows APAC-East Q4 2025 return spike. Source for Genie Returns and Quality page.
+Grain: region x country x month.'
+TBLPROPERTIES ('quality_tier'='gold','domain'='geography','genie_page'='returns_quality',
+               'key_story'='apac_east_return_spike','data_product'='nexus_retail')
+AS
+SELECT region_id, region_name, super_region, country_code, country_name, regional_currency, sale_month,
+  SUM(order_count) AS order_count, SUM(unique_customers) AS unique_customers,
+  SUM(gross_revenue) AS gross_revenue, SUM(return_count) AS return_count,
+  SUM(refund_total) AS refund_total, SUM(net_revenue) AS net_revenue,
+  ROUND(AVG(return_rate_pct),2) AS return_rate_pct,
+  ROUND(AVG(avg_order_value),2) AS avg_order_value,
+  SUM(cancelled_orders) AS cancelled_orders,
+  ROUND(AVG(cancellation_rate_pct),2) AS cancellation_rate_pct
+FROM `{C}`.online_retail_gold.gold_regional_performance
+GROUP BY region_id, region_name, super_region, country_code, country_name, regional_currency, sale_month
+""")
+
+    # Metric Views need async execution (timeout > 50s not allowed by sync API)
+    import time as _time
+    from databricks.sdk.service.sql import StatementState as _SS
+
+    def _sql_async(label: str, stmt: str):
+        try:
+            r = w.statement_execution.execute_statement(
+                warehouse_id=WAREHOUSE_ID, statement=stmt.strip(), wait_timeout="0s")
+            sid = r.statement_id
+            for _ in range(30):
+                _time.sleep(3)
+                r2 = w.statement_execution.get_statement(sid)
+                st = r2.status.state
+                if st in (_SS.SUCCEEDED, _SS.CLOSED):
+                    print(f"  ✓  {label}"); return True
+                if st in (_SS.FAILED, _SS.CANCELED):
+                    err = r2.status.error.message[:200] if r2.status.error else "?"
+                    print(f"  ✗  {label}  {err}"); return False
+            print(f"  ⏰  {label}  timeout"); return False
+        except Exception as e:
+            print(f"  ✗  {label}  {str(e)[:120]}"); return False
+
+    _sql_async("metrics_sales_kpis", f"""
+CREATE OR REPLACE VIEW `{C}`.online_retail_metrics.metrics_sales_kpis
+  WITH METRICS LANGUAGE YAML
+  COMMENT 'NexusRetail Sales KPIs. Dimensions: Sale Month, Sale Quarter, Channel, Region, Super Region.
+Measures: Gross Revenue, Order Count, Avg Order Value, Unique Customers, New Customers, Returning Customers.
+Use MEASURE() function. Genie: Sales Performance page.'
+AS $$
+  version: 1.1
+  source: {C}.online_retail_gold.gold_daily_revenue
+  dimensions:
+    - name: Sale Month
+      expr: DATE_TRUNC('MONTH', sale_date)
+      comment: "Month of sale — primary time dimension"
+    - name: Sale Quarter
+      expr: DATE_TRUNC('QUARTER', sale_date)
+      comment: "Quarter. Q4 Oct-Dec is the seasonal peak"
+    - name: Channel
+      expr: channel
+      comment: "web | mobile | partner_api"
+    - name: Region
+      expr: region_name
+      comment: "7 global sales regions"
+    - name: Super Region
+      expr: super_region
+      comment: "Americas | EMEA | Asia Pacific"
+  measures:
+    - name: Gross Revenue
+      expr: SUM(gross_revenue)
+      comment: "Total revenue. Primary measure."
+    - name: Order Count
+      expr: SUM(order_count)
+    - name: Avg Order Value
+      expr: SUM(gross_revenue) / NULLIF(SUM(order_count), 0)
+    - name: Unique Customers
+      expr: SUM(unique_customers)
+    - name: New Customers
+      expr: SUM(new_customers)
+      comment: "Customers placing their first-ever order"
+    - name: Returning Customers
+      expr: SUM(returning_customers)
+$$""")
+
+    _sql_async("metrics_customer_kpis", f"""
+CREATE OR REPLACE VIEW `{C}`.online_retail_metrics.metrics_customer_kpis
+  WITH METRICS LANGUAGE YAML
+  COMMENT 'NexusRetail Customer KPIs. Dimensions: Age Bracket, Income Bracket, Loyalty Tier, Acquisition Channel, Region, Month.
+Measures: Revenue, Customer Count, Avg Order Value, Repeat Purchase Rate.
+Use MEASURE() function. Genie: Customer Analytics page.'
+AS $$
+  version: 1.1
+  source: {C}.online_retail_metrics.mv_customer_demo_sales
+  dimensions:
+    - name: Age Bracket
+      expr: age_bracket
+      comment: "18-24 | 25-34 | 35-44 | 45-54 | 55+"
+    - name: Income Bracket
+      expr: income_bracket
+    - name: Loyalty Tier
+      expr: loyalty_tier
+      comment: "Bronze | Silver | Gold | Platinum"
+    - name: Acquisition Channel
+      expr: acquisition_channel
+    - name: Region
+      expr: region_name
+    - name: Month
+      expr: sale_month
+  measures:
+    - name: Revenue
+      expr: SUM(revenue)
+    - name: Customer Count
+      expr: SUM(unique_customers)
+    - name: Avg Order Value
+      expr: SUM(revenue) / NULLIF(SUM(order_count), 0)
+    - name: Repeat Purchase Rate
+      expr: AVG(avg_repeat_rate_pct)
+      comment: "% customers with more than one order"
+$$""")
+
+    _sql_async("metrics_product_kpis", f"""
+CREATE OR REPLACE VIEW `{C}`.online_retail_metrics.metrics_product_kpis
+  WITH METRICS LANGUAGE YAML
+  COMMENT 'NexusRetail Product/Returns KPIs. FAULT-PHON-* return_rate exceeds 40%% in Q4 2025.
+Dimensions: Category, Subcategory, Return Reason, Faulty Batch, Return Month.
+Measures: Return Count, Total Refund, Return Rate.
+Use MEASURE() function. Genie: Returns and Quality page.'
+AS $$
+  version: 1.1
+  source: {C}.online_retail_gold.gold_return_analysis
+  dimensions:
+    - name: Category
+      expr: category_name
+    - name: Subcategory
+      expr: subcategory_name
+    - name: Return Reason
+      expr: return_reason_code
+      comment: "faulty_product | wrong_item | changed_mind | damaged_in_transit"
+    - name: Faulty Batch
+      expr: "CASE WHEN faulty_batch THEN 'Defective (FAULT-PHON-*)' ELSE 'Normal' END"
+      comment: "TRUE for 8 defective SKUs. Filter here to isolate the Q3 2025 root cause."
+    - name: Return Month
+      expr: DATE_TRUNC('MONTH', return_week)
+  measures:
+    - name: Return Count
+      expr: SUM(return_count)
+    - name: Total Refund
+      expr: SUM(total_refund_amount)
+    - name: Return Rate
+      expr: AVG(return_rate_pct)
+      comment: "Normal 4-8%%. FAULT-* shows >40%%. Alert threshold 25%%."
+$$""")
+
+    # 4. Catalog comment
+    print("\n4. Catalog and schema comments...")
     sql("catalog comment",
         f"COMMENT ON CATALOG `{C}` IS '{CATALOG_COMMENT}'", allow_fail=True)
 
@@ -692,8 +884,8 @@ ALTER TABLE `{C}`.online_retail_silver.silver_dim_customers
         sql(f"schema comment {schema_fqn.split('.')[-1]}",
             f"COMMENT ON SCHEMA {schema_fqn} IS '{comment}'", allow_fail=True)
 
-    # 4. Table comments, tags, column comments
-    print("\n4. Table comments and tags...")
+    # 5. Table comments, tags, column comments
+    print("\n5. Table comments and tags...")
     # Determine which tables are MVs/Views (can't do ALTER COLUMN on them)
     MV_TYPES = {"MATERIALIZED_VIEW", "VIEW", "METRIC_VIEW"}
 
@@ -715,14 +907,14 @@ ALTER TABLE `{C}`.online_retail_silver.silver_dim_customers
                 comment_escaped = col_comment_text.replace("'", "\\'")
                 col_comment(full_name, col_name, comment_escaped)
 
-    # 5. PII column tags
-    print("\n5. PII column tags...")
+    # 6. PII column tags
+    print("\n6. PII column tags...")
     for table, columns in PII_COLUMN_TAGS.items():
         for col_name, tags in columns.items():
             col_tag(table, col_name, tags)
 
-    # 6. Grants
-    print("\n6. Grants...")
+    # 7. Grants
+    print("\n7. Grants...")
     for stmt in [
         f"GRANT USE CATALOG ON CATALOG `{C}` TO `{OWNER_USER}`",
         f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_bronze TO `{OWNER_USER}`",
