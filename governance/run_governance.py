@@ -132,8 +132,115 @@ SCHEMA_COMMENTS = {
         "Quality tier: gold. Owner: analytics. Genie domain: Online Retail Analytics.",
 }
 
+# ── Schema-level tags ────────────────────────────────────────────────────────
+# Applied to the schema securable so Genie domain classification and
+# Catalog Explorer browsing pick up the right groupings automatically.
+
+SCHEMA_TAGS = {
+    f"`{C}`.online_retail_raw": {
+        "quality_tier":  "raw",
+        "data_layer":    "raw",
+        "data_domain":   "online_retail",
+        "data_product":  "nexus_retail",
+        "contains_pii":  "true",
+        "owner":         "data_engineering",
+        "genie_ready":   "false",
+    },
+    f"`{C}`.online_retail_bronze": {
+        "quality_tier":  "bronze",
+        "data_layer":    "bronze",
+        "data_domain":   "online_retail",
+        "data_product":  "nexus_retail",
+        "contains_pii":  "true",
+        "owner":         "data_engineering",
+        "genie_ready":   "false",
+    },
+    f"`{C}`.online_retail_silver": {
+        "quality_tier":  "silver",
+        "data_layer":    "silver",
+        "data_domain":   "online_retail",
+        "data_product":  "nexus_retail",
+        "contains_pii":  "true",
+        "pii_masked":    "true",
+        "regulatory":    "gdpr",
+        "owner":         "data_engineering",
+        "genie_ready":   "false",
+    },
+    f"`{C}`.online_retail_gold": {
+        "quality_tier":  "gold",
+        "data_layer":    "gold",
+        "data_domain":   "online_retail",
+        "data_product":  "nexus_retail",
+        "contains_pii":  "false",
+        "owner":         "analytics",
+        "genie_ready":   "true",
+    },
+    f"`{C}`.online_retail_metrics": {
+        "quality_tier":  "gold",
+        "data_layer":    "semantic",
+        "data_domain":   "online_retail",
+        "data_product":  "nexus_retail",
+        "contains_pii":  "false",
+        "owner":         "analytics",
+        "genie_ready":   "true",
+        "semantic_layer":"true",
+    },
+}
+
 TABLE_METADATA = {
-    # ── BRONZE ──────────────────────────────────────────────────────────────
+    # ── BRONZE — reference tables ────────────────────────────────────────────
+    f"`{C}`.online_retail_bronze.bronze_ref_regions": {
+        "comment":
+            "Reference table: 7 global sales regions with super-region grouping and primary currency. "
+            "Grain: one row per region. Static — no updates expected.",
+        "tags": {"quality_tier": "bronze", "domain": "geography", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "dimension", "genie_domain": "all"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_ref_countries": {
+        "comment":
+            "Reference table: 65 countries with ISO codes, region FK, currency, and language. "
+            "Covers all 7 sales regions. Grain: one row per country code.",
+        "tags": {"quality_tier": "bronze", "domain": "geography", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "dimension", "genie_domain": "all"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_product_categories": {
+        "comment":
+            "Reference table: 12 top-level product categories (Electronics, Apparel, Home & Living, etc.). "
+            "avg_return_rate is the category-level historical return rate benchmark. "
+            "Grain: one row per category.",
+        "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "dimension",
+                 "genie_domain": "sales_performance"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_product_subcategories": {
+        "comment":
+            "Reference table: 50 subcategories across 12 categories (4-5 per category). "
+            "SUB-0101 (Smartphones) contains the 8 FAULT-PHON-* defective products. "
+            "Grain: one row per subcategory.",
+        "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "dimension",
+                 "genie_domain": "sales_performance"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_product_pricing": {
+        "comment":
+            "Product price history. Each product has 1-3 records with effective_from/effective_to dates. "
+            "Used in silver_dim_products to derive current_price. "
+            "Grain: one row per (product, effective date range).",
+        "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "fact",
+                 "genie_domain": "sales_performance"},
+    },
+    f"`{C}`.online_retail_bronze.bronze_return_items": {
+        "comment":
+            "Raw return line items: 1-2 items per return request with condition assessment "
+            "(unopened/opened/damaged/defective). ~146 rows. "
+            "Used in silver_fact_returns and gold_return_analysis for product-level return rates. "
+            "Grain: one row per (return, product).",
+        "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "fact",
+                 "genie_domain": "returns_quality"},
+    },
+    # ── BRONZE — core tables ─────────────────────────────────────────────────
     f"`{C}`.online_retail_bronze.bronze_orders": {
         "comment":
             "Raw order headers ingested via Auto Loader from UC Volume. "
@@ -161,7 +268,7 @@ TABLE_METADATA = {
             "Grain: one row per customer.",
         "tags": {"quality_tier": "bronze", "domain": "customer", "contains_pii": "true",
                  "pii_classification": "direct", "regulatory": "gdpr", "data_product": "nexus_retail",
-                 "owner": "data_engineering"},
+                 "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "customer_id":    "Business key in CUST-XXXXXX format. Primary key.",
             "full_name":      "PII:direct — customer full name. Masked at silver layer: shows first initial only for non-owner.",
@@ -181,7 +288,7 @@ TABLE_METADATA = {
             "These NULL records are dropped at silver_fact_invoices via @dp.expect_or_drop and captured "
             "in silver_dq_quarantine with rule: invoice_total_null. Grain: one row per invoice.",
         "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
-                 "dq_known_issue": "null_totals_intentional_demo", "owner": "data_engineering"},
+                 "dq_known_issue": "null_totals_intentional_demo", "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "invoice_id":      "Unique invoice identifier in INV-XXXXXXX format. Primary key.",
             "invoice_number":  "Human-readable invoice reference in NR-YYYY-XXXXXX format. Should be globally unique.",
@@ -201,7 +308,7 @@ TABLE_METADATA = {
             "Current price is enriched from bronze_product_pricing in the silver dim. "
             "Grain: one row per product.",
         "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
-                 "contains_faulty_batch": "true", "owner": "data_engineering"},
+                 "contains_faulty_batch": "true", "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "dimension"},
         "columns": {
             "product_id":      "Unique product identifier in PROD-XXXXX format. Primary key.",
             "sku":             "Stock keeping unit. FAULT-PHON-00XX prefix for the 8 defective batch products.",
@@ -221,7 +328,7 @@ TABLE_METADATA = {
             "Returns are validated at silver_fact_returns with return_reason_code expect decorator. "
             "Grain: one row per return request.",
         "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
-                 "contains_anomaly": "q4_2025_return_spike", "owner": "data_engineering"},
+                 "contains_anomaly": "q4_2025_return_spike", "owner": "data_engineering", "genie_domain": "returns_quality", "table_type": "fact"},
         "columns": {
             "return_id":           "Unique return identifier in RET-XXXXXX format. Primary key.",
             "order_id":            "FK to bronze_orders. The order being returned.",
@@ -239,7 +346,7 @@ TABLE_METADATA = {
             "for DQX warn demo. Failed payments are quarantined in silver_dq_quarantine with rule: failed_payment. "
             "Grain: one row per payment.",
         "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
-                 "dq_known_issue": "failed_payments_intentional_demo", "owner": "data_engineering"},
+                 "dq_known_issue": "failed_payments_intentional_demo", "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "payment_id":      "Unique payment identifier in PAY-XXXXXXX format. Primary key.",
             "order_id":        "FK to bronze_orders.",
@@ -256,7 +363,7 @@ TABLE_METADATA = {
             "discount_pct ranges from 0-20% based on promotional activity. "
             "Grain: one row per (order, product) combination.",
         "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
-                 "owner": "data_engineering"},
+                 "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "line_id":      "Line item key in ORD-XXXXXXX-N format. Primary key.",
             "order_id":     "FK to bronze_orders.",
@@ -274,7 +381,7 @@ TABLE_METADATA = {
             "extended_price = line_total + tax_amount. "
             "Grain: one row per (invoice, order line item) combination.",
         "tags": {"quality_tier": "bronze", "domain": "transaction", "data_product": "nexus_retail",
-                 "owner": "data_engineering"},
+                 "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "inv_line_id":    "Line item key combining invoice_id and line_id. Primary key.",
             "invoice_id":     "FK to bronze_invoices.",
@@ -292,7 +399,7 @@ TABLE_METADATA = {
             "loyalty_tier drives CLV segmentation in gold_customer_lifetime_value. "
             "Grain: one row per customer.",
         "tags": {"quality_tier": "bronze", "domain": "customer", "contains_pii": "true",
-                 "pii_classification": "quasi", "data_product": "nexus_retail", "owner": "data_engineering"},
+                 "pii_classification": "quasi", "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "customer_analytics", "table_type": "dimension"},
         "columns": {
             "customer_id":         "FK to bronze_customers.customer_id.",
             "age_bracket":         "Age group: 18-24 | 25-34 | 35-44 | 45-54 | 55+.",
@@ -310,7 +417,7 @@ TABLE_METADATA = {
             "country_code FK to bronze_ref_countries. "
             "Grain: one row per address.",
         "tags": {"quality_tier": "bronze", "domain": "customer", "contains_pii": "true",
-                 "pii_classification": "direct", "data_product": "nexus_retail", "owner": "data_engineering"},
+                 "pii_classification": "direct", "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "customer_analytics", "table_type": "dimension"},
         "columns": {
             "customer_id":   "FK to bronze_customers.",
             "address_type":  "billing or shipping.",
@@ -328,7 +435,7 @@ TABLE_METADATA = {
             "corroborating the return rate anomaly visible in gold_return_analysis. "
             "Grain: one row per (order, product) review.",
         "tags": {"quality_tier": "bronze", "domain": "product", "data_product": "nexus_retail",
-                 "owner": "data_engineering"},
+                 "owner": "data_engineering", "genie_domain": "returns_quality", "table_type": "fact"},
         "columns": {
             "review_id":         "Unique review identifier in REV-XXXXXXX format. Primary key.",
             "product_id":        "FK to bronze_products.",
@@ -346,7 +453,7 @@ TABLE_METADATA = {
             "product_defect tickets rise from 10% to 40% during the spike period. "
             "Grain: one row per ticket.",
         "tags": {"quality_tier": "bronze", "domain": "customer", "data_product": "nexus_retail",
-                 "contains_anomaly": "q4_2025_ticket_spike", "owner": "data_engineering"},
+                 "contains_anomaly": "q4_2025_ticket_spike", "owner": "data_engineering", "genie_domain": "returns_quality", "table_type": "fact"},
         "columns": {
             "ticket_id":            "Unique ticket identifier in TKT-XXXXXXX format. Primary key.",
             "customer_id":          "FK to bronze_customers.",
@@ -359,6 +466,26 @@ TABLE_METADATA = {
     },
 
     # ── SILVER ────────────────────────────────────────────────────────────────
+    f"`{C}`.online_retail_silver.silver_dim_date": {
+        "comment":
+            "Date spine dimension covering Sep 2024 – Dec 2027. "
+            "Columns: date_key (YYYYMMDD int), calendar_date, year, quarter, month, "
+            "week_of_year, day_of_week, is_weekend, is_q4 (Oct–Dec), fiscal_quarter (FQ1-FQ4). "
+            "Join on calendar_date to add time attributes to any fact table. "
+            "Grain: one row per calendar day.",
+        "tags": {"quality_tier": "silver", "domain": "reference", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "dimension", "genie_domain": "all"},
+    },
+    f"`{C}`.online_retail_silver.silver_dim_geography": {
+        "comment":
+            "Denormalised country → region geography dimension. "
+            "Columns: country_code, country_name, region_id, region_name, super_region, "
+            "regional_currency, country_currency, primary_language, continent_code. "
+            "Used as FK lookup from silver_fact_orders and silver_fact_returns. "
+            "Grain: one row per country.",
+        "tags": {"quality_tier": "silver", "domain": "geography", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "table_type": "dimension", "genie_domain": "all"},
+    },
     f"`{C}`.online_retail_silver.silver_dim_customers": {
         "comment":
             "Cleansed SCD-1 customer dimension enriched with demographics. "
@@ -369,7 +496,7 @@ TABLE_METADATA = {
             "Grain: one row per customer (current state, SCD-1).",
         "tags": {"quality_tier": "silver", "domain": "customer", "contains_pii": "true",
                  "pii_masked": "true", "regulatory": "gdpr", "data_product": "nexus_retail",
-                 "scd_type": "1", "owner": "data_engineering"},
+                 "scd_type": "1", "owner": "data_engineering", "genie_domain": "customer_analytics", "table_type": "dimension"},
         "columns": {
             "customer_id":         "Business key CUST-XXXXXX. Primary key.",
             "full_name":           "PII:direct — Masked for non-owner: first initial + ***. GDPR Art.4(1).",
@@ -396,7 +523,7 @@ TABLE_METADATA = {
             "avg_return_rate is the category-level historical return rate benchmark. "
             "Grain: one row per product (streaming, latest state).",
         "tags": {"quality_tier": "silver", "domain": "product", "contains_faulty_batch": "true",
-                 "data_product": "nexus_retail", "owner": "data_engineering"},
+                 "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "dimension"},
         "columns": {
             "product_id":      "Business key PROD-XXXXX. Primary key.",
             "sku":             "Stock keeping unit. FAULT-PHON-00XX for the 8 defective products.",
@@ -418,7 +545,7 @@ TABLE_METADATA = {
             "region_id and region_name derived from customer billing country. "
             "Grain: one row per order.",
         "tags": {"quality_tier": "silver", "domain": "transaction", "data_product": "nexus_retail",
-                 "owner": "data_engineering"},
+                 "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "order_id":       "Business key ORD-XXXXXXX. Primary key.",
             "customer_id":    "FK to silver_dim_customers.",
@@ -440,7 +567,7 @@ TABLE_METADATA = {
             "total_variance = invoice_total - order_total. Should be ≤ $0.01 when total_reconciled = TRUE. "
             "Grain: one row per invoice (with valid total only).",
         "tags": {"quality_tier": "silver", "domain": "transaction", "dq_note": "null_totals_dropped",
-                 "data_product": "nexus_retail", "owner": "data_engineering"},
+                 "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "sales_performance", "table_type": "fact"},
         "columns": {
             "invoice_id":         "Business key INV-XXXXXXX. Primary key.",
             "invoice_number":     "Human-readable NR-YYYY-XXXXXX reference.",
@@ -460,7 +587,7 @@ TABLE_METADATA = {
             "return_category groups reason codes: quality_issue | fulfilment_error | customer_preference. "
             "Grain: one row per return request.",
         "tags": {"quality_tier": "silver", "domain": "transaction", "contains_anomaly": "q4_2025_return_spike",
-                 "data_product": "nexus_retail", "owner": "data_engineering"},
+                 "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "returns_quality", "table_type": "fact"},
         "columns": {
             "return_id":              "Business key RET-XXXXXX. Primary key.",
             "order_id":               "FK to silver_fact_orders.",
@@ -480,7 +607,7 @@ TABLE_METADATA = {
             "Row count > 0 should trigger a data quality alert. "
             "Monitor this table after every pipeline run as a data health KPI.",
         "tags": {"quality_tier": "silver", "domain": "data_quality", "alert_on": "nonzero_row_count",
-                 "data_product": "nexus_retail", "owner": "data_engineering"},
+                 "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "all", "table_type": "quality"},
     },
 
     # ── GOLD ─────────────────────────────────────────────────────────────────
@@ -554,7 +681,7 @@ TABLE_METADATA = {
             "Refreshed on every pipeline run. Used as primary Genie data source for Sales Performance page. "
             "contains_faulty_products flag surfaces Electronics anomaly in Q4 2025.",
         "tags": {"quality_tier": "gold", "domain": "product", "genie_page": "sales_performance",
-                 "data_product": "nexus_retail", "owner": "analytics"},
+                 "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "sales_performance", "table_type": "fact"},
     },
     f"`{C}`.online_retail_metrics.mv_customer_demo_sales": {
         "comment":
@@ -563,7 +690,7 @@ TABLE_METADATA = {
             "Genie data source for Customer Analytics page. "
             "avg_repeat_rate_pct is the key engagement metric per segment.",
         "tags": {"quality_tier": "gold", "domain": "customer", "genie_page": "customer_analytics",
-                 "data_product": "nexus_retail", "owner": "analytics"},
+                 "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "customer_analytics", "table_type": "fact"},
     },
     f"`{C}`.online_retail_metrics.mv_regional_orders": {
         "comment":
@@ -572,7 +699,7 @@ TABLE_METADATA = {
             "Genie data source for Returns and Quality page. "
             "return_rate_pct and cancellation_rate_pct are the key quality KPIs.",
         "tags": {"quality_tier": "gold", "domain": "geography", "genie_page": "returns_quality",
-                 "key_story": "apac_east_return_spike", "data_product": "nexus_retail", "owner": "analytics"},
+                 "key_story": "apac_east_return_spike", "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "returns_quality", "table_type": "fact"},
     },
     f"`{C}`.online_retail_metrics.metrics_sales_kpis": {
         "comment":
@@ -581,7 +708,7 @@ TABLE_METADATA = {
             "Measures: Gross Revenue, Order Count, Avg Order Value, Unique Customers, New Customers, Returning Customers. "
             "Query using MEASURE() function. Genie: Sales Performance page.",
         "tags": {"quality_tier": "gold", "domain": "transaction", "semantic_layer": "metric_view",
-                 "genie_page": "sales_performance", "data_product": "nexus_retail", "owner": "analytics"},
+                 "genie_page": "sales_performance", "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "sales_performance", "table_type": "semantic"},
     },
     f"`{C}`.online_retail_metrics.metrics_customer_kpis": {
         "comment":
@@ -590,7 +717,7 @@ TABLE_METADATA = {
             "Measures: Revenue, Customer Count, Avg Order Value, Repeat Purchase Rate. "
             "Query using MEASURE() function. Genie: Customer Analytics page.",
         "tags": {"quality_tier": "gold", "domain": "customer", "semantic_layer": "metric_view",
-                 "genie_page": "customer_analytics", "data_product": "nexus_retail", "owner": "analytics"},
+                 "genie_page": "customer_analytics", "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "customer_analytics", "table_type": "semantic"},
     },
     f"`{C}`.online_retail_metrics.metrics_product_kpis": {
         "comment":
@@ -601,7 +728,7 @@ TABLE_METADATA = {
             "Query using MEASURE() function. Genie: Returns and Quality page.",
         "tags": {"quality_tier": "gold", "domain": "product", "semantic_layer": "metric_view",
                  "genie_page": "returns_quality", "key_story": "faulty_batch_anomaly",
-                 "data_product": "nexus_retail", "owner": "analytics"},
+                 "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "returns_quality", "table_type": "semantic"},
     },
 }
 
@@ -875,14 +1002,17 @@ AS $$
       comment: "Normal 4-8%%. FAULT-* shows >40%%. Alert threshold 25%%."
 $$""")
 
-    # 4. Catalog comment
-    print("\n4. Catalog and schema comments...")
+    # 4. Catalog comment + schema comments + schema tags
+    print("\n4. Catalog, schema comments and schema tags...")
     sql("catalog comment",
         f"COMMENT ON CATALOG `{C}` IS '{CATALOG_COMMENT}'", allow_fail=True)
 
     for schema_fqn, comment in SCHEMA_COMMENTS.items():
         sql(f"schema comment {schema_fqn.split('.')[-1]}",
             f"COMMENT ON SCHEMA {schema_fqn} IS '{comment}'", allow_fail=True)
+
+    for schema_fqn, tags in SCHEMA_TAGS.items():
+        apply_tags("SCHEMA", schema_fqn, tags)
 
     # 5. Table comments, tags, column comments
     print("\n5. Table comments and tags...")
