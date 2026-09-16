@@ -105,3 +105,19 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+
+    nexus_retail_domains:
+      name: "NexusRetail — Discover Domains & Ontology Pages"
+      tasks:
+        - task_key: domains_setup
+          notebook_task:
+            notebook_path: ./setup/03_domains_setup.py
+            base_parameters:
+              catalog:      ${var.catalog}
+              warehouse_id: ${var.warehouse_id}
+              owner_user:   ${var.owner_user}
+          environment_key: serverless
+      environments:
+        - environment_key: serverless
+          spec:
+            client: "1"

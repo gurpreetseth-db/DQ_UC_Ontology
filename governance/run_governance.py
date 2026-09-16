@@ -74,6 +74,21 @@ def apply_tags(obj_type: str, full_name: str, tags: dict, allow_fail: bool = Tru
     sql(f"tag {full_name}", f"ALTER {obj_type} {full_name} SET TAGS ({tag_str})", allow_fail)
 
 
+def ensure_governed_tag(tag_key: str, description: str):
+    """Register a governed tag (Tag Policy API) so it can back a Discover domain.
+    Idempotent — treats an existing tag as success."""
+    try:
+        w.api_client.do("POST", "/api/2.1/tag-policies",
+                        body={"tag_key": tag_key, "description": description})
+        print(f"  ✓  governed tag {tag_key}")
+    except Exception as e:
+        msg = str(e)
+        if any(s in msg for s in ("ALREADY_EXISTS", "already exists", "409")):
+            print(f"  ✓  governed tag {tag_key} (exists)")
+        else:
+            print(f"  ⚠  governed tag {tag_key}  {msg[:120]}")
+
+
 def col_comment(table: str, col: str, comment: str):
     """Apply a comment to a table column (Streaming Tables only, not MVs)."""
     sql(f"col comment {table}.{col}",
@@ -756,6 +771,46 @@ PII_COLUMN_TAGS = {
     },
 }
 
+# ── Discover Domains — governed tags & table membership ───────────────────────
+# NexusRetail is organised as one parent Discover domain ("Online Retail") with
+# three subdomains that mirror the genie_domain classification already carried by
+# every table above. Domains in Unity Catalog Discover are built on GOVERNED tags
+# (Tag Policy API), and an asset joins a (sub)domain by carrying that governed tag.
+# Subdomains follow the required `{parentTag}/{subdomain}` naming convention, and
+# the parent tag and subdomain tag are INDEPENDENT — a table needs both.
+#
+# This section (1) registers the governed tags and (2) applies them to each table
+# based on its genie_domain, so setup/03_domains_setup.py can bind domains to the
+# tags and every online_retail_* table lands in the right (sub)domain.
+
+DOMAIN_PARENT_TAG = "online_retail"
+
+SUBDOMAIN_TAGS = {
+    "sales_performance":  "online_retail/sales_performance",
+    "customer_analytics": "online_retail/customer_analytics",
+    "returns_quality":    "online_retail/returns_quality",
+}
+
+# gold_* Materialized Views don't carry a genie_domain tag in TABLE_METADATA;
+# map them to their subdomain by table name so they join the right subdomain too.
+GOLD_GENIE_DOMAIN = {
+    "gold_category_sales":          "sales_performance",
+    "gold_daily_revenue":           "sales_performance",
+    "gold_customer_segment_sales":  "customer_analytics",
+    "gold_customer_lifetime_value": "customer_analytics",
+    "gold_regional_performance":    "returns_quality",
+    "gold_return_analysis":         "returns_quality",
+}
+
+def _subdomain_tag_for(full_name: str, meta: dict):
+    """Return the subdomain governed tag for a table, or None (parent-only, e.g.
+    shared dimensions / DQ tagged genie_domain='all')."""
+    gd = (meta.get("tags") or {}).get("genie_domain")
+    if not gd or gd == "all":
+        gd = GOLD_GENIE_DOMAIN.get(full_name.split(".")[-1].strip("`"))
+    return SUBDOMAIN_TAGS.get(gd)
+
+
 # ── Main ─────────────────────────────────────────────────────────────────────
 
 def main():
@@ -1057,9 +1112,35 @@ $$""")
     ]:
         sql(f"grant {stmt.split('ON')[1].strip()[:50]}", stmt, allow_fail=True)
 
+    # 8. Discover domain governed tags + table membership
+    #    Registers the parent + 3 subdomain governed tags, then tags every
+    #    online_retail_* table into its (sub)domain. setup/03_domains_setup.py
+    #    then binds Discover domains to these tags and reads them back to build
+    #    the ontology Pages. Parent + subdomain tags are applied independently.
+    print("\n8. Discover domain governed tags + table membership...")
+    ensure_governed_tag(DOMAIN_PARENT_TAG,
+                        "NexusRetail online retail data domain — all online_retail_* schemas.")
+    for gd, tag in SUBDOMAIN_TAGS.items():
+        ensure_governed_tag(tag, f"Online Retail subdomain: {gd.replace('_', ' ')}.")
+
+    for full_name, meta in TABLE_METADATA.items():
+        short = full_name.split(".")[-1].strip("`")
+        # Every table joins the parent domain.
+        sql(f"domain tag {short}",
+            f"ALTER TABLE {full_name} SET TAGS ('{DOMAIN_PARENT_TAG}' = '')",
+            allow_fail=True)
+        # ...and its subdomain, when it maps to one.
+        sub = _subdomain_tag_for(full_name, meta)
+        if sub:
+            sql(f"subdomain tag {short}",
+                f"ALTER TABLE {full_name} SET TAGS ('{sub}' = '')",
+                allow_fail=True)
+
     print(f"\n{'='*60}")
     print("Governance setup complete.")
     print(f"  Catalog : https://YOUR-WORKSPACE/#explore/data/{C}")
+    print(f"  Next    : run setup/03_domains_setup.py to create Discover domains")
+    print(f"            and generate the ontology Pages bulk-import file.")
     print(f"{'='*60}")
 
 

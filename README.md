@@ -378,7 +378,7 @@ Source: `gold_return_analysis`
 
 ## Genie One Setup
 
-Three domain pages in the "NexusRetail Analytics" Genie space, backed by metric views.
+The "NexusRetail Analytics" Genie space, backed by the metric views, plus a Unity Catalog **Discover ontology** (domains + Pages) that Genie One reads as authoritative context. The three business areas below map to the three Discover **subdomains** created in Step 6.
 
 ### Data Sources
 
@@ -394,7 +394,9 @@ gurpreet_sethi.online_retail_gold.gold_return_analysis
 gurpreet_sethi.online_retail_gold.gold_customer_lifetime_value
 ```
 
-### Pages & Sample Questions
+### Business Areas & Sample Questions
+
+Each area is a Discover subdomain (`online_retail/…`) with its own associated tables and Ontology Pages:
 
 **📊 Sales Performance**
 - "What were the top 5 categories by revenue in Q4 2025?"
@@ -413,13 +415,17 @@ gurpreet_sethi.online_retail_gold.gold_customer_lifetime_value
 
 ### Automated Setup
 
-Run the Genie setup as a bundle job — it creates the space, domain, 3 pages, 8 knowledge snippets, and wires all 12 data sources automatically:
+Two jobs build the conversational + ontology layer:
 
 ```bash
-databricks bundle run nexus_retail_genie_setup -t dev
+databricks bundle run nexus_retail_genie_setup -t dev   # Genie space, snippets, sample questions
+databricks bundle run nexus_retail_domains -t dev        # Discover domains + Ontology Pages file
 ```
 
-A complete manual setup guide is also printed at the end of the notebook for any API endpoints still in preview.
+- **`nexus_retail_genie_setup`** creates the Genie space, wires all 12 data sources, and adds knowledge snippets + sample questions.
+- **`nexus_retail_domains`** creates the `Online Retail` parent domain + 3 subdomains (each auto-populated by the governed tags applied in Step 4) and generates the **Genie Ontology Pages** bulk-import file. Import it via **Discover ▸ Pages ▸ Genie Code ▸ Bulk import pages** and Publish.
+
+> **Note on Pages:** Discover Pages are Beta and have no public create API, so the setup generates a deterministic bulk-import document from the governed metadata rather than calling an endpoint. See [Deployment Step 6](#step-6--create-discover-domains--genie-ontology-pages).
 
 ---
 
@@ -511,6 +517,7 @@ Runs `governance/run_governance.py` on serverless. In one job it:
 - Applies column-level comments on every key column across bronze + silver tables
 - Applies UC tags (`quality_tier`, `domain`, `contains_pii`, `pii_classification`, `regulatory`, `owner`, `data_product`, etc.) to every table and PII column
 - Creates the `online_retail_metrics` schema with 3 UC Materialized Views and 3 Metric Views
+- **Registers the Discover domain governed tags (`online_retail` + 3 subdomain tags) and tags every table into its (sub)domain** — this is what associates the `online_retail_*` tables with the domains created in Step 6
 
 ### Step 5 — Set Up Genie One
 
@@ -520,10 +527,26 @@ databricks bundle run nexus_retail_genie_setup -t dev
 
 Runs `setup/02_genie_setup.py` on serverless. Creates the "NexusRetail Analytics" Genie space with:
 - 12 data sources (gold + metrics tables)
-- "Online Retail Analytics" domain
-- 3 pages (Sales Performance, Customer Analytics, Returns & Quality)
-- 8 knowledge snippets covering data model, revenue definition, faulty batch story, CLV segments, regions, dates, metric view syntax, and DQ context
-- Space instructions (system prompt) for accurate NL query handling
+- 7 knowledge snippets covering data model, revenue definition, faulty batch story, CLV segments, regions, dates, and DQ context
+- Space instructions + sample questions for accurate NL query handling
+
+### Step 6 — Create Discover Domains & Genie Ontology Pages
+
+```bash
+databricks bundle run nexus_retail_domains -t dev
+```
+
+Runs `setup/03_domains_setup.py` on serverless. It:
+- Registers the governed tags backing the domains (idempotent).
+- Creates the **`Online Retail` parent domain** + **3 subdomains** (Sales Performance, Customer Analytics, Returns & Quality) via the Discover Domains API. Tables tagged in Step 4 automatically appear under the matching domain.
+- Reads the governed domain tags + table comments that Step 4 saved to Unity Catalog and generates a **Pages bulk-import file** (`/Volumes/<catalog>/online_retail_metrics/discover_ontology/nexus_retail_pages.md`) — 15 curated concept Pages (Gross Revenue, CLV, Return Rate, Faulty Batch, …) + one Page per governed table, grouped by domain.
+
+Then, in the workspace: **Discover ▸ Pages ▸ Create page ▸ Genie Code ▸ Bulk import pages**, attach the generated file, review the drafts, and **Publish**. Published Pages become authoritative context that Genie One prioritizes and cites.
+
+> **Prerequisites for Step 6** (account-admin, one-time):
+> - Enable the previews **Domains and Discover Page** (per account) and **Discover Page** (per workspace).
+> - The runner needs **`MANAGE DISCOVERY`** and **`APPLY TAG`**.
+> - Domains are **account-level and capped (currently 300 per account)**. If the account is at the cap, domain creation is skipped with a clear message — the governed tags and the Pages file are still produced. Free domain slots or request a higher limit, then re-run.
 
 ---
 
@@ -538,6 +561,9 @@ Runs `setup/02_genie_setup.py` on serverless. Creates the "NexusRetail Analytics
 | Pipeline fails `WAITING_FOR_RESOURCES` | Code analysis error in pipeline notebooks | `databricks pipelines list-pipeline-events <pipeline_id>` |
 | Governance tags fail with `INVALID_PARAMETER_VALUE` | Tag keys not pre-registered in this workspace | Apply remaining tags manually via Catalog Explorer UI → Tags |
 | Column comment fails on gold/metrics tables | `ALTER COLUMN` not supported on Materialized Views or Metric Views | Expected — governance script skips MVs automatically; MV comments are set via `COMMENT ON TABLE` |
+| Domain creation reports `RESOURCE_EXHAUSTED` / "maximum allowed number of domains (300)" | Domains are account-level and the account is at its cap | Free domain slots (Discover → Manage Domains) or request a higher account limit, then re-run `nexus_retail_domains`. Governed tags + Pages file are still produced. |
+| `nexus_retail_domains` create call seems to hang | The SDK/CLI silently retries HTTP 429 with long backoff | Expected only against the raw API — the notebook uses a short-timeout HTTP call and fails fast with clear guidance |
+| Pages have no "create" API | Discover Pages are Beta; no public create endpoint | Use the generated bulk-import file via Discover ▸ Pages ▸ Genie Code ▸ Bulk import pages (the supported programmatic path) |
 
 ---
 
@@ -661,9 +687,14 @@ DQ_UC_Ontology/
 │   ├── 01_generate_raw_data.py     # ★ Raw data notebook (bundle job: nexus_retail_generate_data)
 │   │                               #   Generates 20 Parquet tables (~15K rows) on serverless.
 │   │                               #   Reads catalog from job base_parameters.
-│   └── 02_genie_setup.py           # ★ Genie notebook (bundle job: nexus_retail_genie_setup)
-│                                   #   Creates space, domain, 3 pages, 8 knowledge snippets.
-│                                   #   Reads catalog/warehouse_id from job base_parameters.
+│   ├── 02_genie_setup.py           # ★ Genie notebook (bundle job: nexus_retail_genie_setup)
+│   │                               #   Creates the Genie space, knowledge snippets, sample questions.
+│   │                               #   Reads catalog/warehouse_id from job base_parameters.
+│   └── 03_domains_setup.py         # ★ Discover Domains + Ontology Pages (bundle job: nexus_retail_domains)
+│                                   #   Creates the Online Retail parent domain + 3 subdomains and
+│                                   #   generates the Genie Ontology Pages bulk-import file from the
+│                                   #   governed comments/tags saved by run_governance.py.
+│                                   #   Reads catalog/warehouse_id/owner_user from job base_parameters.
 │
 └── src/
     ├── bronze_layer.py             # 18 Auto Loader Streaming Tables (SDP pipeline)
@@ -677,8 +708,9 @@ DQ_UC_Ontology/
 |---|---|---|---|
 | `nexus_retail_generate_data` | `setup/01_generate_raw_data.py` | Generates 20-table raw dataset in UC Volume | 1st |
 | `nexus_retail_pipeline` | `src/bronze_layer.py` + `silver_layer.py` + `gold_layer.py` | SDP pipeline — 32 Delta tables | 2nd |
-| `nexus_retail_governance` | `governance/run_governance.py` | PII masks, tags, comments, metric views | 3rd |
-| `nexus_retail_genie_setup` | `setup/02_genie_setup.py` | Genie space, domain, pages, snippets | 4th |
+| `nexus_retail_governance` | `governance/run_governance.py` | PII masks, tags, comments, metric views, **domain governed tags + table membership** | 3rd |
+| `nexus_retail_genie_setup` | `setup/02_genie_setup.py` | Genie space, knowledge snippets, sample questions | 4th |
+| `nexus_retail_domains` | `setup/03_domains_setup.py` | **Discover Domains (parent + 3 subdomains) + Genie Ontology Pages bulk-import file** | 5th |
 
 All jobs receive `catalog`, `warehouse_id`, and `owner_user` from `databricks.local.yml` via DAB variables → `base_parameters`.
 
