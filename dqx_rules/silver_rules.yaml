@@ -1,228 +1,349 @@
 # =============================================================================
-# NexusRetail Analytics — DQX Data Quality Rules
-# Library  : databricks-labs-dqx>=0.5.0
-# Applied  : Silver layer transformation (silver_layer.py)
-# Reference: https://databrickslabs.github.io/dqx/
+# NexusRetail Analytics — DQX Data Quality Rules  (native DQX metadata format)
+# Library  : databricks-labs-dqx==0.16.0
+# Applied  : src/silver_layer.py  →  silver_dq_quarantine (DQX-driven)
+# Reference: https://databrickslabs.github.io/dqx/docs/reference/quality_checks/
 # =============================================================================
-# Rule structure:
-#   name        : unique rule identifier (shown in quarantine + DQX dashboard)
-#   criticality : error (drop row) | warn (flag but keep)
-#   filter      : SQL expression — TRUE means the row FAILS this check
+# This file is loaded in the pipeline with yaml.safe_load and each entity's list
+# is passed to DQEngine.apply_checks_by_metadata(df, checks[<entity>]).
+#
+# Each check is a native DQX rule:
+#   criticality : error  → row is a hard failure (surfaces in quarantine as 'error')
+#                 warn   → row is flagged      (surfaces in quarantine as 'warn')
+#   name        : stable rule id — shown in the quarantine 'dq_rule' column
+#   check.function / check.arguments : a DQX built-in check
+#
+# IMPORTANT — DQX polarity: for `sql_expression`, the `expression` is a VALIDITY
+# condition (TRUE = pass, FALSE = fail). Our rules are historically written as the
+# FAIL condition, so we set `negate: true` — i.e. "row fails when expression TRUE".
+# Typed checks (is_not_null / is_in_list / is_in_range / regex_match / is_unique)
+# use their natural (non-negated) validity semantics; NULLs pass membership/range
+# checks unless a dedicated not_null rule covers them (matches the old NOT IN /
+# BETWEEN behaviour).
+# -----------------------------------------------------------------------------
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CUSTOMERS
+# CUSTOMERS   (input: bronze_customers ⋈ bronze_customer_demographics)
 # ─────────────────────────────────────────────────────────────────────────────
 customers:
-  completeness:
-    - name: customer_id_not_null
-      criticality: error
-      filter: "customer_id IS NULL"
-    - name: email_not_null
-      criticality: warn
-      filter: "email IS NULL"
-    - name: phone_not_null
-      criticality: warn
-      filter: "phone IS NULL"
-
-  validity:
-    - name: email_valid_format
-      criticality: warn
-      filter: "email IS NOT NULL AND NOT rlike(email, '^[^@\\s]+@[^@\\s]+\\.[^@\\s]{2,}$')"
-    - name: customer_type_valid
-      criticality: error
-      filter: "customer_type NOT IN ('B2C', 'B2B')"
-    - name: loyalty_tier_valid
-      criticality: warn
-      filter: "loyalty_tier NOT IN ('Bronze', 'Silver', 'Gold', 'Platinum')"
-    - name: nps_score_range
-      criticality: warn
-      filter: "nps_score IS NOT NULL AND nps_score NOT BETWEEN 1 AND 10"
-
-  uniqueness:
-    - name: email_unique
-      criticality: warn
-      filter: "email IN ('duplicate.test@example.com')"   # known DQX demo duplicates
+  - criticality: error
+    name: customer_id_not_null
+    check: { function: is_not_null, arguments: { column: customer_id } }
+  - criticality: warn
+    name: email_not_null
+    check: { function: is_not_null, arguments: { column: email } }
+  - criticality: warn
+    name: phone_not_null
+    check: { function: is_not_null, arguments: { column: phone } }
+  - criticality: warn
+    name: email_valid_format
+    check:
+      function: regex_match
+      arguments:
+        column: email
+        regex: '^[^@\s]+@[^@\s]+\.[^@\s]{2,}$'
+  - criticality: error
+    name: customer_type_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: customer_type
+        allowed: ["'B2C'", "'B2B'"]
+  - criticality: warn
+    name: loyalty_tier_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: loyalty_tier
+        allowed: ["'Bronze'", "'Silver'", "'Gold'", "'Platinum'"]
+  - criticality: warn
+    name: nps_score_range
+    check:
+      function: is_in_range
+      arguments: { column: nps_score, min_limit: 1, max_limit: 10 }
+  - criticality: warn
+    name: email_unique
+    check:
+      function: is_unique
+      arguments: { columns: [email] }
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ORDERS
+# ORDERS   (input: bronze_orders + computed_total from bronze_order_items)
 # ─────────────────────────────────────────────────────────────────────────────
 orders:
-  completeness:
-    - name: order_id_not_null
-      criticality: error
-      filter: "order_id IS NULL"
-    - name: customer_idx_not_null
-      criticality: error
-      filter: "customer_idx IS NULL"
-    - name: order_date_not_null
-      criticality: error
-      filter: "order_date IS NULL"
-
-  validity:
-    - name: order_status_valid
-      criticality: error
-      filter: "status NOT IN ('delivered','shipped','confirmed','cancelled','pending')"
-    - name: order_date_in_range
-      criticality: warn
-      filter: "order_date < DATE '2024-01-01' OR order_date > current_date()"
-    - name: order_total_positive
-      criticality: warn
-      filter: "order_total IS NOT NULL AND order_total <= 0"
-
-  referential:
-    - name: total_matches_items
-      criticality: warn
-      filter: "abs(order_total - computed_total) > 0.01"
+  - criticality: error
+    name: order_id_not_null
+    check: { function: is_not_null, arguments: { column: order_id } }
+  - criticality: error
+    name: customer_idx_not_null
+    check: { function: is_not_null, arguments: { column: customer_idx } }
+  - criticality: error
+    name: order_date_not_null
+    check: { function: is_not_null, arguments: { column: order_date } }
+  - criticality: error
+    name: order_status_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: status
+        allowed: ["'delivered'", "'shipped'", "'confirmed'", "'cancelled'", "'pending'"]
+  - criticality: warn
+    name: order_date_in_range
+    check:
+      function: sql_expression
+      arguments:
+        expression: "order_date < DATE '2024-01-01' OR order_date > current_date()"
+        negate: true
+        msg: "order_date outside 2024-01-01..today"
+        columns: [order_date]
+  - criticality: warn
+    name: order_total_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "order_total IS NOT NULL AND order_total <= 0"
+        negate: true
+        msg: "order_total is non-positive"
+        columns: [order_total]
+  - criticality: warn
+    name: total_matches_items
+    check:
+      function: sql_expression
+      arguments:
+        expression: "abs(order_total - computed_total) > 0.01"
+        negate: true
+        msg: "order_total does not match sum of line items (±0.01)"
+        columns: [order_total, computed_total]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# INVOICES
+# INVOICES   (input: bronze_invoices)
 # ─────────────────────────────────────────────────────────────────────────────
 invoices:
-  completeness:
-    - name: invoice_id_not_null
-      criticality: error
-      filter: "invoice_id IS NULL"
-    - name: invoice_total_not_null
-      criticality: error   # ~40 intentional NULLs → DROPPED → appear in quarantine
-      filter: "invoice_total IS NULL"
-    - name: order_id_not_null
-      criticality: error
-      filter: "order_id IS NULL"
-    - name: issue_date_not_null
-      criticality: error
-      filter: "issue_date IS NULL"
-
-  validity:
-    - name: invoice_status_valid
-      criticality: warn
-      filter: "invoice_status NOT IN ('paid','pending','overdue','cancelled')"
-    - name: due_date_after_issue_date
-      criticality: warn
-      filter: "due_date IS NOT NULL AND issue_date IS NOT NULL AND due_date < issue_date"
-    - name: invoice_total_positive
-      criticality: warn
-      filter: "invoice_total IS NOT NULL AND invoice_total <= 0"
+  - criticality: error
+    name: invoice_id_not_null
+    check: { function: is_not_null, arguments: { column: invoice_id } }
+  - criticality: error
+    name: invoice_total_not_null           # ~52 intentional NULLs → quarantined
+    check: { function: is_not_null, arguments: { column: invoice_total } }
+  - criticality: error
+    name: order_id_not_null
+    check: { function: is_not_null, arguments: { column: order_id } }
+  - criticality: error
+    name: issue_date_not_null
+    check: { function: is_not_null, arguments: { column: issue_date } }
+  - criticality: warn
+    name: invoice_status_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: invoice_status
+        allowed: ["'paid'", "'pending'", "'overdue'", "'cancelled'"]
+  - criticality: warn
+    name: due_date_after_issue_date
+    check:
+      function: sql_expression
+      arguments:
+        expression: "due_date IS NOT NULL AND issue_date IS NOT NULL AND due_date < issue_date"
+        negate: true
+        msg: "due_date is before issue_date"
+        columns: [due_date, issue_date]
+  - criticality: warn
+    name: invoice_total_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "invoice_total IS NOT NULL AND invoice_total <= 0"
+        negate: true
+        msg: "invoice_total is non-positive"
+        columns: [invoice_total]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PRODUCTS
+# PRODUCTS   (input: bronze_products)
 # ─────────────────────────────────────────────────────────────────────────────
 products:
-  completeness:
-    - name: product_id_not_null
-      criticality: error
-      filter: "product_id IS NULL"
-    - name: sku_not_null
-      criticality: error
-      filter: "sku IS NULL"
-    - name: category_id_not_null
-      criticality: warn
-      filter: "category_id IS NULL"
-
-  validity:
-    - name: base_price_positive
-      criticality: warn
-      filter: "base_price IS NOT NULL AND base_price <= 0"
-    - name: weight_positive
-      criticality: warn
-      filter: "weight_kg IS NOT NULL AND weight_kg <= 0"
-
-  statistical:
-    - name: price_outlier_check
-      criticality: warn
-      filter: "base_price > 1500 OR base_price < 0.50"
+  - criticality: error
+    name: product_id_not_null
+    check: { function: is_not_null, arguments: { column: product_id } }
+  - criticality: error
+    name: sku_not_null
+    check: { function: is_not_null, arguments: { column: sku } }
+  - criticality: warn
+    name: category_id_not_null
+    check: { function: is_not_null, arguments: { column: category_id } }
+  - criticality: warn
+    name: base_price_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "base_price IS NOT NULL AND base_price <= 0"
+        negate: true
+        msg: "base_price is non-positive"
+        columns: [base_price]
+  - criticality: warn
+    name: weight_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "weight_kg IS NOT NULL AND weight_kg <= 0"
+        negate: true
+        msg: "weight_kg is non-positive"
+        columns: [weight_kg]
+  - criticality: warn
+    name: price_outlier_check
+    check:
+      function: sql_expression
+      arguments:
+        expression: "base_price > 1500 OR base_price < 0.50"
+        negate: true
+        msg: "base_price outside plausible 0.50..1500 range"
+        columns: [base_price]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# ORDER ITEMS
+# ORDER ITEMS   (input: bronze_order_items, PK line_id)
 # ─────────────────────────────────────────────────────────────────────────────
 order_items:
-  completeness:
-    - name: order_id_not_null
-      criticality: error
-      filter: "order_id IS NULL"
-    - name: product_id_not_null
-      criticality: error
-      filter: "product_id IS NULL"
-
-  validity:
-    - name: quantity_positive
-      criticality: error
-      filter: "quantity IS NULL OR quantity <= 0"
-    - name: quantity_reasonable
-      criticality: warn
-      filter: "quantity > 100"
-    - name: unit_price_positive
-      criticality: error
-      filter: "unit_price IS NULL OR unit_price <= 0"
-    - name: discount_pct_range
-      criticality: warn
-      filter: "discount_pct IS NOT NULL AND (discount_pct < 0 OR discount_pct > 90)"
+  - criticality: error
+    name: order_id_not_null
+    check: { function: is_not_null, arguments: { column: order_id } }
+  - criticality: error
+    name: product_id_not_null
+    check: { function: is_not_null, arguments: { column: product_id } }
+  - criticality: error
+    name: quantity_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "quantity IS NULL OR quantity <= 0"
+        negate: true
+        msg: "quantity is null or non-positive"
+        columns: [quantity]
+  - criticality: warn
+    name: quantity_reasonable
+    check:
+      function: sql_expression
+      arguments:
+        expression: "quantity > 100"
+        negate: true
+        msg: "quantity unusually high (>100)"
+        columns: [quantity]
+  - criticality: error
+    name: unit_price_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "unit_price IS NULL OR unit_price <= 0"
+        negate: true
+        msg: "unit_price is null or non-positive"
+        columns: [unit_price]
+  - criticality: warn
+    name: discount_pct_range
+    check:
+      function: sql_expression
+      arguments:
+        expression: "discount_pct IS NOT NULL AND (discount_pct < 0 OR discount_pct > 90)"
+        negate: true
+        msg: "discount_pct outside 0..90"
+        columns: [discount_pct]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RETURNS
+# RETURNS   (input: bronze_returns, PK return_id)
 # ─────────────────────────────────────────────────────────────────────────────
 returns:
-  completeness:
-    - name: return_id_not_null
-      criticality: error
-      filter: "return_id IS NULL"
-    - name: order_id_not_null
-      criticality: error
-      filter: "order_id IS NULL"
-    - name: return_reason_not_null
-      criticality: warn
-      filter: "return_reason_code IS NULL OR return_reason_code = ''"
-
-  validity:
-    - name: return_reason_valid
-      criticality: warn
-      filter: "return_reason_code NOT IN ('faulty_product','wrong_item','changed_mind','damaged_in_transit','not_as_described')"
-    - name: return_status_valid
-      criticality: warn
-      filter: "return_status NOT IN ('approved','pending','rejected','completed')"
-    - name: refund_amount_positive
-      criticality: warn
-      filter: "refund_amount IS NOT NULL AND refund_amount <= 0"
-
-  statistical:
-    - name: return_rate_anomaly
-      criticality: warn
-      # Flag if a single order has more returns than items (data anomaly)
-      filter: "FALSE"  # placeholder — computed in pipeline via window function
+  - criticality: error
+    name: return_id_not_null
+    check: { function: is_not_null, arguments: { column: return_id } }
+  - criticality: error
+    name: order_id_not_null
+    check: { function: is_not_null, arguments: { column: order_id } }
+  - criticality: warn
+    name: return_reason_not_null
+    check:
+      function: sql_expression
+      arguments:
+        expression: "return_reason_code IS NULL OR return_reason_code = ''"
+        negate: true
+        msg: "return_reason_code is null or empty"
+        columns: [return_reason_code]
+  - criticality: warn
+    name: return_reason_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: return_reason_code
+        allowed: ["'faulty_product'", "'wrong_item'", "'changed_mind'", "'damaged_in_transit'", "'not_as_described'"]
+  - criticality: warn
+    name: return_status_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: return_status
+        allowed: ["'approved'", "'pending'", "'rejected'", "'completed'"]
+  - criticality: warn
+    name: refund_amount_positive
+    check:
+      function: sql_expression
+      arguments:
+        expression: "refund_amount IS NOT NULL AND refund_amount <= 0"
+        negate: true
+        msg: "refund_amount is non-positive"
+        columns: [refund_amount]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# PAYMENTS
+# PAYMENTS   (input: bronze_payments, PK payment_id)
 # ─────────────────────────────────────────────────────────────────────────────
 payments:
-  completeness:
-    - name: payment_id_not_null
-      criticality: error
-      filter: "payment_id IS NULL"
-    - name: order_id_not_null
-      criticality: error
-      filter: "order_id IS NULL"
-
-  validity:
-    - name: payment_method_valid
-      criticality: warn
-      filter: "payment_method NOT IN ('credit_card','debit_card','paypal','bank_transfer','buy_now_pay_later')"
-    - name: payment_status_valid
-      criticality: warn
-      filter: "payment_status NOT IN ('completed','pending','failed','refunded')"
-    - name: failed_payment_flag
-      criticality: warn
-      filter: "payment_status = 'failed'"   # ~3% expected — DQX demo signal
+  - criticality: error
+    name: payment_id_not_null
+    check: { function: is_not_null, arguments: { column: payment_id } }
+  - criticality: error
+    name: order_id_not_null
+    check: { function: is_not_null, arguments: { column: order_id } }
+  - criticality: warn
+    name: payment_method_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: payment_method
+        allowed: ["'credit_card'", "'debit_card'", "'paypal'", "'bank_transfer'", "'buy_now_pay_later'"]
+  - criticality: warn
+    name: payment_status_valid
+    check:
+      function: is_in_list
+      arguments:
+        column: payment_status
+        allowed: ["'completed'", "'pending'", "'failed'", "'refunded'"]
+  - criticality: warn
+    name: failed_payment_flag                # ~43 intentional 'failed' → flagged
+    check:
+      function: sql_expression
+      arguments:
+        expression: "payment_status = 'failed'"
+        negate: true
+        msg: "payment failed — flagged for AR review"
+        columns: [payment_status]
 
 # ─────────────────────────────────────────────────────────────────────────────
-# REVIEWS
+# REVIEWS   (input: bronze_product_reviews, PK review_id)
 # ─────────────────────────────────────────────────────────────────────────────
 reviews:
-  validity:
-    - name: rating_in_range
-      criticality: error
-      filter: "rating IS NULL OR rating NOT BETWEEN 1 AND 5"
-    - name: review_id_not_null
-      criticality: error
-      filter: "review_id IS NULL"
-    - name: review_text_not_empty
-      criticality: warn
-      filter: "review_text IS NULL OR length(trim(review_text)) < 5"
+  - criticality: error
+    name: review_id_not_null
+    check: { function: is_not_null, arguments: { column: review_id } }
+  - criticality: error
+    name: rating_in_range
+    check:
+      function: sql_expression
+      arguments:
+        expression: "rating IS NULL OR rating NOT BETWEEN 1 AND 5"
+        negate: true
+        msg: "rating is null or outside 1..5"
+        columns: [rating]
+  - criticality: warn
+    name: review_text_not_empty
+    check:
+      function: sql_expression
+      arguments:
+        expression: "review_text IS NULL OR length(trim(review_text)) < 5"
+        negate: true
+        msg: "review_text is null or too short (<5 chars)"
+        columns: [review_text]

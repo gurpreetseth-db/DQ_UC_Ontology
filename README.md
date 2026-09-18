@@ -239,7 +239,7 @@ Special handling on `bronze_products`: the `faulty_batch` flag and `FAULT-PHON-*
 
 ## Data Quality Framework
 
-Quality checks are implemented at two levels:
+Quality checks are implemented at two complementary levels:
 
 ### 1. Native SDP Expectations (pipeline-enforced)
 
@@ -251,28 +251,31 @@ Violations appear in the **Pipeline UI** as expectation metrics. Three enforceme
 | Drop | `@dp.expect_or_drop` | Row excluded from silver table |
 | Fail | `@dp.expect_or_fail` | Pipeline update fails on first violation |
 
-### 2. DQ Quarantine MV (`silver_dq_quarantine`)
+### 2. DQX-driven quarantine (`silver_dq_quarantine`)
 
-An explicit Materialized View that captures all records failing critical checks across the pipeline. 139 records currently in quarantine:
+This Materialized View is **computed by the [databricks-labs-dqx](https://databrickslabs.github.io/dqx/) engine** (pinned `==0.16.0`), not hardcoded. `dqx_rules/silver_rules.yaml` is the authoritative rule registry — native DQX checks grouped by entity — and `src/silver_layer.py` loads it (path passed via the pipeline `dqx.rules_path` config), applies `DQEngine.apply_checks_by_metadata` to each of the **8 bronze entities** (customers, orders, invoices, products, order_items, returns, payments, reviews), and explodes the DQX `_errors`/`_warnings` results into the quarantine's fixed 7-column schema (`source_table, dq_rule, severity, record_key, detail, context, quarantined_at`).
+
+The seeded demo issues surface as **real DQX results** (approximate counts):
 
 ```
 source_table       | dq_rule                  | severity | count
 -------------------|--------------------------|----------|------
-bronze_invoices    | invoice_total_null       | error    | ~52
-bronze_payments    | failed_payment           | warn     | ~43
-bronze_returns     | high_return_rate_product | warn     | 41
-bronze_customers   | duplicate_email          | warn     | 3
+bronze_invoices    | invoice_total_not_null   | error    | ~52
+bronze_payments    | failed_payment_flag      | warn     | ~43
+bronze_customers   | email_unique             | warn     | ~3
 ```
 
-Rules are documented in `dqx_rules/silver_rules.yaml` using the [databricks-labs-dqx](https://databrickslabs.github.io/dqx/) schema — this file serves as the authoritative rule registry for governance and audit purposes.
+To change what gets quarantined, edit `dqx_rules/silver_rules.yaml` and re-run the pipeline — no code changes. Checks use typed DQX functions (`is_not_null`, `is_in_list`, `is_in_range`, `regex_match`, `is_unique`) plus `sql_expression` (with `negate: true`) for cross-column rules.
 
-### Quality Metrics Summary
+### Quality Metrics Summary (`silver_dq_summary`)
+
+A companion MV rolls the quarantine up to failing-record counts per `(source_table, dq_rule, severity)` — a dashboard/alert-friendly view:
 
 ```
 bronze_orders         →  silver_fact_orders        1,200 / 1,200  (0 dropped)
 bronze_invoices       →  silver_fact_invoices       1,012 / 1,064  (52 dropped — NULL total)
 bronze_returns        →  silver_fact_returns          120 / 120    (0 dropped)
-silver_dq_quarantine  →  total flagged records         139
+silver_dq_quarantine  →  DQX-flagged records across all 8 entities
 ```
 
 ---
