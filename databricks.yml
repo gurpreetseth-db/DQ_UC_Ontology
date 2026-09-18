@@ -54,6 +54,10 @@ resources:
       configuration:
         catalog: ${var.catalog}
         pipeline.env: ${bundle.target}
+        # Path to the DQX rules YAML (synced with the bundle). Read in
+        # src/silver_layer.py via spark.conf.get("dqx.rules_path"). The
+        # databricks-labs-dqx package is installed via %pip in silver_layer.py.
+        dqx.rules_path: ${workspace.file_path}/dqx_rules/silver_rules.yaml
       clusters: []
 
   jobs:

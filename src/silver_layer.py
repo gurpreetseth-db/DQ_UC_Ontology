@@ -1,18 +1,27 @@
 # Databricks notebook source
+
+# MAGIC %pip install databricks-labs-dqx==0.16.0
+
+# COMMAND ----------
 # NexusRetail Analytics — Silver Layer
-# Pattern  : Streaming Tables + native SDP expectations + explicit quarantine MV
+# Pattern  : Streaming Tables + native SDP expectations + DQX-driven quarantine MV
 # Schema   : gurpreet_sethi.online_retail_silver
-# DQ rules : Native @dp.expect / @dp.expect_or_drop decorators
-#            (rules documented in dqx_rules/silver_rules.yaml for DQX tooling)
+# DQ rules : Native @dp.expect / @dp.expect_or_drop decorators (enforcement) PLUS
+#            databricks-labs-dqx applied from dqx_rules/silver_rules.yaml, which
+#            drives the silver_dq_quarantine + silver_dq_summary MVs.
 # PII      : Column masks applied via MASK functions (governance/01_column_masks.sql)
 #
-# Quarantine: silver_dq_quarantine MV collects records failing critical checks
-#             from bronze. Run governance/01_column_masks.sql after first pipeline run.
+# Quarantine: silver_dq_quarantine MV collects records failing DQX checks across
+#             all 8 bronze entities. Run governance/01_column_masks.sql after first
+#             pipeline run.
 
 # COMMAND ----------
 from pyspark import pipelines as dp
 from pyspark.sql import functions as F, types as T
 from pyspark.sql import Window
+from databricks.labs.dqx.engine import DQEngine
+from databricks.sdk import WorkspaceClient
+import yaml
 
 CATALOG = spark.conf.get("catalog", "gurpreet_sethi")
 BRZ     = f"`{CATALOG}`.online_retail_bronze"
@@ -20,86 +29,160 @@ SLV     = f"`{CATALOG}`.online_retail_silver"
 RAW_VOL = f"/Volumes/{CATALOG}/online_retail_raw/raw_data"
 
 # ─────────────────────────────────────────────────────────────────────────────
-# DQ QUARANTINE  (Materialized View — explicit bad-record capture)
-# Shows records failing the critical data quality checks DQX would catch:
-#   • ~52 invoices with NULL total_amount
-#   • 3 duplicate customer emails
-#   • ~43 failed payments
+# DQX HELPERS  (drives the silver_dq_quarantine table below)
+# Rules live in dqx_rules/silver_rules.yaml (native DQX metadata, grouped by
+# entity). The bundle syncs that file to the workspace and passes its path via
+# the pipeline configuration key 'dqx.rules_path' (see databricks.yml).
+# ─────────────────────────────────────────────────────────────────────────────
+DQX_RULES_PATH = spark.conf.get("dqx.rules_path", "")
+
+# Primary key per entity → becomes the quarantine 'record_key'.
+DQX_KEY = {
+    "customers":   "customer_id",
+    "orders":      "order_id",
+    "invoices":    "invoice_id",
+    "products":    "product_id",
+    "order_items": "line_id",
+    "returns":     "return_id",
+    "payments":    "payment_id",
+    "reviews":     "review_id",
+}
+
+# Bronze table backing each entity's checks (defaults to bronze_<entity>).
+DQX_TABLE = {
+    "reviews": "bronze_product_reviews",
+}
+
+
+def _load_dqx_checks() -> dict:
+    """Load native DQX checks grouped by entity from the synced YAML."""
+    if not DQX_RULES_PATH:
+        raise ValueError(
+            "Pipeline conf 'dqx.rules_path' is not set — add it under the "
+            "pipeline 'configuration' in databricks.yml.")
+    with open(DQX_RULES_PATH) as f:
+        return yaml.safe_load(f)
+
+
+def _dqx_input(entity: str):
+    """Batch bronze DataFrame shaped for an entity's checks.
+
+    Batch (spark.read) so dataset-level checks like is_unique work. Handles the
+    three column mismatches: customers needs demographics (loyalty_tier/nps_score),
+    orders needs computed_total from line items, reviews lives in a differently
+    named table.
+    """
+    if entity == "customers":
+        cust = spark.read.table(f"{BRZ}.bronze_customers")
+        # Demographics is a per-customer dimension — dedupe on customer_id so the
+        # left join stays 1:1 and customer checks aren't double-counted.
+        demo = (spark.read.table(f"{BRZ}.bronze_customer_demographics")
+                .select("customer_id", "loyalty_tier", "nps_score")
+                .dropDuplicates(["customer_id"]))
+        return cust.join(demo, "customer_id", "left")
+    if entity == "orders":
+        orders = spark.read.table(f"{BRZ}.bronze_orders")
+        items = (spark.read.table(f"{BRZ}.bronze_order_items")
+                 .groupBy("order_id")
+                 .agg(F.round(F.sum("line_total"), 2).alias("computed_total")))
+        return orders.join(items, "order_id", "left")
+    return spark.read.table(f"{BRZ}.{DQX_TABLE.get(entity, f'bronze_{entity}')}")
+
+
+def _dqx_quarantine_rows(annotated, entity: str, key_col: str, arr_col: str, severity: str):
+    """Explode a DQX result column (_errors|_warnings) into the fixed 7-column
+    quarantine schema. `arr_col` is an array<struct> — explode() keeps only rows
+    that actually failed at least one check."""
+    return (
+        annotated
+        .select(
+            F.col(key_col).cast("string").alias("record_key"),
+            F.explode(F.col(arr_col)).alias("issue"),
+        )
+        .select(
+            F.lit(f"bronze_{entity}").alias("source_table"),
+            F.col("issue.name").alias("dq_rule"),
+            F.lit(severity).alias("severity"),
+            F.col("record_key"),
+            F.col("issue.message").alias("detail"),
+            F.concat_ws(", ", F.col("issue.columns")).alias("context"),
+            F.current_timestamp().alias("quarantined_at"),
+        )
+    )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# DQ QUARANTINE  (Materialized View — DQX-driven bad-record capture)
+# Every failing/flagged row is computed by the databricks-labs-dqx engine from
+# the rules in dqx_rules/silver_rules.yaml — NOT hardcoded. Covers all 8 entities
+# (customers, orders, invoices, products, order_items, returns, payments,
+# reviews). The seeded demo issues surface here as real DQX results:
+#   • ~52 invoices with NULL invoice_total   → rule invoice_total_not_null (error)
+#   • 3 customers sharing an email           → rule email_unique          (warn)
+#   • ~43 payments with status='failed'      → rule failed_payment_flag   (warn)
+# Schema is intentionally stable (7 columns) — Genie, Domains and governance
+# reference this table by name + schema.
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
     name=f"{SLV}.silver_dq_quarantine",
-    comment="DQX-style quarantine: records from bronze that fail critical data quality checks. "
-            "Three known issues intentionally embedded in raw data for demo: "
-            "(1) ~52 invoices with NULL invoice_total — completeness violation; "
-            "(2) 3 customers sharing email 'duplicate.test@example.com' — uniqueness violation; "
-            "(3) ~43 payments with status='failed' — flagged for review. "
-            "Row count > 0 here should trigger an alert. Monitor this table.",
+    comment="DQX-driven quarantine: every row failing or flagged by a databricks-labs-dqx "
+            "check defined in dqx_rules/silver_rules.yaml, across all 8 bronze entities. "
+            "Columns: source_table, dq_rule (DQX check name), severity (error|warn), "
+            "record_key (entity PK), detail (DQX message), context (columns involved), "
+            "quarantined_at. Seeded demo issues surface as real results: ~52 "
+            "invoice_total_not_null (error), 3 email_unique (warn), ~43 failed_payment_flag "
+            "(warn). Row count > 0 should trigger an alert. Monitor this table.",
     table_properties={
         "quality": "silver",
         "domain": "data_quality",
         "data_product": "nexus_retail",
         "alert_on": "nonzero_row_count",
+        "dq_engine": "databricks-labs-dqx",
     },
     cluster_by=["source_table", "dq_rule"],
 )
 def silver_dq_quarantine():
-    return spark.sql(f"""
-        -- Completeness: NULL invoice totals (should never be null)
-        SELECT
-            'bronze_invoices'       AS source_table,
-            'invoice_total_null'    AS dq_rule,
-            'error'                 AS severity,
-            invoice_id              AS record_key,
-            CAST(order_id AS STRING) AS detail,
-            CAST(issue_date AS STRING) AS context,
-            current_timestamp()    AS quarantined_at
-        FROM {BRZ}.bronze_invoices
-        WHERE invoice_total IS NULL
+    checks = _load_dqx_checks()
+    engine = DQEngine(WorkspaceClient())
+    parts = []
+    for entity, key_col in DQX_KEY.items():
+        entity_checks = checks.get(entity)
+        if not entity_checks:
+            continue
+        annotated = engine.apply_checks_by_metadata(_dqx_input(entity), entity_checks)
+        parts.append(_dqx_quarantine_rows(annotated, entity, key_col, "_errors", "error"))
+        parts.append(_dqx_quarantine_rows(annotated, entity, key_col, "_warnings", "warn"))
 
-        UNION ALL
+    result = parts[0]
+    for part in parts[1:]:
+        result = result.unionByName(part)
+    return result
 
-        -- Uniqueness: duplicate customer emails
-        SELECT
-            'bronze_customers'      AS source_table,
-            'duplicate_email'       AS dq_rule,
-            'warn'                  AS severity,
-            customer_id             AS record_key,
-            email                   AS detail,
-            customer_type           AS context,
-            current_timestamp()
-        FROM {BRZ}.bronze_customers
-        WHERE email = 'duplicate.test@example.com'
 
-        UNION ALL
+# ─────────────────────────────────────────────────────────────────────────────
+# DQ SUMMARY  (Materialized View — dashboard/alert-friendly rollup)
+# One row per (source_table, dq_rule, severity) with the count of failing records.
+# ─────────────────────────────────────────────────────────────────────────────
 
-        -- Validity: failed payments (3% rate, flagged for AR review)
-        SELECT
-            'bronze_payments'       AS source_table,
-            'failed_payment'        AS dq_rule,
-            'warn'                  AS severity,
-            payment_id              AS record_key,
-            order_id                AS detail,
-            currency_code           AS context,
-            current_timestamp()
-        FROM {BRZ}.bronze_payments
-        WHERE payment_status = 'failed'
-
-        UNION ALL
-
-        -- Statistical: return rate anomaly — products with >25% return rate
-        -- (placeholder for the faulty batch products that will emerge post-Q3 2025)
-        SELECT
-            'bronze_returns'        AS source_table,
-            'high_return_rate_product' AS dq_rule,
-            'warn'                  AS severity,
-            return_id               AS record_key,
-            order_id                AS detail,
-            return_reason_code      AS context,
-            current_timestamp()
-        FROM {BRZ}.bronze_returns
-        WHERE return_reason_code = 'faulty_product'
-    """)
+@dp.materialized_view(
+    name=f"{SLV}.silver_dq_summary",
+    comment="DQX quality rollup: failing-record counts per (source_table, dq_rule, severity) "
+            "over silver_dq_quarantine. Drives DQ dashboards/alerts.",
+    table_properties={
+        "quality": "silver",
+        "domain": "data_quality",
+        "data_product": "nexus_retail",
+    },
+)
+def silver_dq_summary():
+    return (
+        spark.read.table(f"{SLV}.silver_dq_quarantine")
+        .groupBy("source_table", "dq_rule", "severity")
+        .agg(
+            F.count("*").alias("failing_records"),
+            F.max("quarantined_at").alias("last_evaluated_at"),
+        )
+    )
 
 
 # ─────────────────────────────────────────────────────────────────────────────
