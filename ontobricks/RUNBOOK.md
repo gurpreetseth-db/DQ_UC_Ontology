@@ -144,9 +144,21 @@ make deploy             # deploys + starts both apps (main + MCP), Lakebase back
 
 ## 4. Add reasoning + live functions
 
-- **SHACL** — import [`shacl/faulty_batch_shapes.ttl`](./shacl/faulty_batch_shapes.ttl)
-  and run SHACL validation after the build. A clean run proves the narrative is
-  internally consistent; violations are demo talking points.
+- **SHACL** — two-part workflow (OntoBricks compiles shapes to SQL):
+  1. **Import the property shapes** — Sidebar → **Ontology → Data Quality → Import**
+     → upload [`shacl/faulty_batch_shapes.ttl`](./shacl/faulty_batch_shapes.ttl).
+     Section A shapes (Invoice completeness, Order structure, Return completeness)
+     import and score directly.
+  2. **Build the two narrative shapes by hand** — Sidebar → **Ontology → Data
+     Quality → Add Shape**, using the recipes in Section B of that file
+     (Conformance: *IF `returnReasonCode` = faulty_product THEN
+     `faultyBatchInvolved` = true*; Consistency: *IF `faultyBatch` = true THEN
+     `memberOfBatch` minCount 1*). OntoBricks drops the IF block on file import,
+     so the conditional rules must be created in the UI to score.
+  3. **Run it** — Sidebar → **Knowledge Graph → Data Quality → Run Validation**
+     (after the graph is built). A clean run proves the narrative is internally
+     consistent; violations are demo talking points, and each check shows the
+     generated SQL.
 - **UC functions** — run [`uc_functions/virtual_attributes.sql`](./uc_functions/virtual_attributes.sql)
   on your SQL warehouse (set the `${catalog}` param), then declare them on the
   ontology classes: `customer_return_risk_score` +

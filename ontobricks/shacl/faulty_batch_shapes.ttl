@@ -6,72 +6,35 @@
 ################################################################################
 # NexusRetail SHACL shapes — reasoning / validation over the knowledge graph
 #
-# WHAT THIS IS
-#   SHACL constraints OntoBricks can run under "Build, reason and explore"
-#   (SHACL validation). They encode business/quality rules as graph constraints
-#   — the graph-native complement to the DQX row-level checks in
-#   dqx_rules/silver_rules.yaml. Where DQX quarantines bad ROWS, SHACL flags bad
-#   RELATIONSHIPS and narrative-integrity violations across the whole graph.
+# WHERE THIS RUNS IN ONTOBRICKS
+#   • Import this file:  Sidebar → Ontology → Data Quality → Import
+#   • Run validation:    Sidebar → Knowledge Graph → Data Quality → Run Validation
+#     (each shape is compiled to SQL and executed against the triple-store view;
+#      the graph must be built first).
 #
-# HOW TO USE
-#   Import alongside nexusretail.ttl. Run SHACL validation after a graph Build.
-#   Each violation report is a demo talking point: "the graph itself proves the
-#   faulty-batch story is internally consistent — and flags anything that isn't."
+# IMPORTANT — TWO KINDS OF SHAPE IN THIS FILE
+#   OntoBricks' SHACL engine is category-based and compiles every shape to SQL.
+#
+#   SECTION A — Property-constraint shapes (sh:property + minCount / datatype /
+#   class). These IMPORT and SCORE cleanly (real pass/fail rates).
+#
+#   SECTION B — Conditional narrative shapes (the faulty-batch story). These are
+#   inherently "IF … THEN …" rules. OntoBricks supports them as CONDITIONAL
+#   conformance/consistency shapes, but **it does not reconstruct the IF block on
+#   file import** (a plain import brings the constraint back unguarded). So the
+#   reliable way to get these is to BUILD THEM IN THE UI with "Add Shape" using
+#   the recipes documented in the comments below. The standard SHACL-SPARQL
+#   forms are kept here for reference / other SHACL engines; on import into
+#   OntoBricks they will show an info icon (no pass rate) rather than score.
 ################################################################################
 
-# ── Prefix declaration for the SPARQL-based constraints below ─────────────────
-# sh:prefixes points here; sh:declare makes the nr: prefix resolvable inside the
-# sh:select queries (required by the SHACL SPARQL spec).
-<https://nexusretail.databricks.com/ontology>
-    sh:declare [
-        sh:prefix "nr" ;
-        sh:namespace "https://nexusretail.databricks.com/ontology#"^^xsd:anyURI ;
-    ] .
+# =============================================================================
+# SECTION A — Importable, self-scoring property shapes
+# =============================================================================
 
-# ── Shape 1: narrative integrity ──────────────────────────────────────────────
-# A Return whose reason is 'faulty_product' SHOULD trace to a Product that is a
-# member of the faulty batch. Violations = returns blamed on the defect that do
-# NOT actually contain a batch product (mis-coded returns worth investigating).
-nr:FaultyProductReturnShape
-    a sh:NodeShape ;
-    rdfs:label "Faulty-product return integrity" ;
-    sh:targetClass nr:Return ;
-    sh:sparql [
-        sh:message "Return coded 'faulty_product' but faultyBatchInvolved is not true — reason code and batch evidence disagree." ;
-        sh:prefixes <https://nexusretail.databricks.com/ontology> ;
-        sh:select """
-            SELECT $this
-            WHERE {
-                $this nr:returnReasonCode "faulty_product" .
-                FILTER NOT EXISTS { $this nr:faultyBatchInvolved true }
-            }
-        """ ;
-    ] .
-
-# ── Shape 2: batch membership is well-formed ──────────────────────────────────
-# Any Product that links to a FaultyBatch MUST have faultyBatch = true, and vice
-# versa the flag and the edge must agree. Catches mapping drift.
-nr:BatchMembershipShape
-    a sh:NodeShape ;
-    rdfs:label "Batch membership consistency" ;
-    sh:targetClass nr:Product ;
-    sh:sparql [
-        sh:message "Product is memberOfBatch but faultyBatch flag is not true (or the reverse) — mapping/flag mismatch." ;
-        sh:prefixes <https://nexusretail.databricks.com/ontology> ;
-        sh:select """
-            SELECT $this
-            WHERE {
-                { $this nr:memberOfBatch ?b . FILTER NOT EXISTS { $this nr:faultyBatch true } }
-                UNION
-                { $this nr:faultyBatch true . FILTER NOT EXISTS { $this nr:memberOfBatch ?b } }
-            }
-        """ ;
-    ] .
-
-# ── Shape 3: invoice reconciliation quality ───────────────────────────────────
-# Every Invoice must carry a total (NULLs were dropped at silver) and a
-# reconciliation flag. A graph-level restatement of the DQX invoice_total_null
-# rule.
+# ── Shape A1: invoice reconciliation quality ──────────────────────────────────
+# Graph-level restatement of the DQX invoice_total_null rule: every Invoice must
+# carry a total (NULLs were dropped at silver) and a reconciliation flag.
 nr:InvoiceQualityShape
     a sh:NodeShape ;
     rdfs:label "Invoice completeness" ;
@@ -80,16 +43,18 @@ nr:InvoiceQualityShape
         sh:path nr:invoiceTotal ;
         sh:minCount 1 ;
         sh:datatype xsd:decimal ;
+        sh:severity sh:Violation ;
         sh:message "Invoice has no invoiceTotal — should have been dropped/quarantined at silver." ;
     ] ;
     sh:property [
         sh:path nr:totalReconciled ;
         sh:minCount 1 ;
         sh:datatype xsd:boolean ;
+        sh:severity sh:Warning ;
         sh:message "Invoice missing reconciliation flag." ;
     ] .
 
-# ── Shape 4: order structural completeness ────────────────────────────────────
+# ── Shape A2: order structural completeness ───────────────────────────────────
 # Every Order must be attributable to a Customer and shipped to a Region — the
 # two edges every downstream cohort/traversal query relies on.
 nr:OrderStructureShape
@@ -100,11 +65,100 @@ nr:OrderStructureShape
         sh:path nr:placedBy ;
         sh:minCount 1 ;
         sh:class nr:Customer ;
+        sh:severity sh:Violation ;
         sh:message "Order has no placedBy Customer — orphaned order." ;
     ] ;
     sh:property [
         sh:path nr:orderShippedToRegion ;
         sh:minCount 1 ;
         sh:class nr:Region ;
+        sh:severity sh:Violation ;
         sh:message "Order has no shipping Region — cannot be placed on the geographic traversal." ;
+    ] .
+
+# ── Shape A3: return completeness ─────────────────────────────────────────────
+# Every Return must carry a reason code — the field the whole Returns & Quality
+# subdomain slices on.
+nr:ReturnCompletenessShape
+    a sh:NodeShape ;
+    rdfs:label "Return completeness" ;
+    sh:targetClass nr:Return ;
+    sh:property [
+        sh:path nr:returnReasonCode ;
+        sh:minCount 1 ;
+        sh:datatype xsd:string ;
+        sh:severity sh:Violation ;
+        sh:message "Return has no reason code." ;
+    ] .
+
+# =============================================================================
+# SECTION B — Conditional narrative shapes (BUILD THESE VIA "Add Shape")
+#
+# These carry the faulty-batch story. Recreate each one in
+# Ontology → Data Quality → Add Shape so the IF block compiles to SQL:
+#
+#   ┌─ Shape B1: Faulty-product return integrity ───────────────────────────────┐
+#   │  Category    : Conformance                                                 │
+#   │  Target Class: Return                                                      │
+#   │  IF (condition): returnReasonCode  =  "faulty_product"                     │
+#   │  THEN         : faultyBatchInvolved  hasValue  true   (boolean)            │
+#   │  Severity     : Violation                                                  │
+#   │  Message      : "Return coded faulty_product but faultyBatchInvolved is    │
+#   │                  not true — reason code and batch evidence disagree."      │
+#   └────────────────────────────────────────────────────────────────────────────┘
+#
+#   ┌─ Shape B2: Batch membership consistency ──────────────────────────────────┐
+#   │  Category    : Consistency                                                 │
+#   │  Target Class: Product                                                     │
+#   │  IF (condition): faultyBatch  =  true                                      │
+#   │  THEN         : memberOfBatch  minCount  1   (relationship must exist)     │
+#   │  Severity     : Warning                                                    │
+#   │  Message      : "Faulty product not linked to a FaultyBatch node —         │
+#   │                  mapping drift (only the 8 FAULT-PHON-* SKUs should link)."│
+#   └────────────────────────────────────────────────────────────────────────────┘
+#
+# The reference SHACL-SPARQL forms below are equivalent for a standards SHACL
+# engine; OntoBricks lists them with an info icon (no pass rate) on import, which
+# is why the UI recipes above are the reliable path.
+# =============================================================================
+
+<https://nexusretail.databricks.com/ontology>
+    sh:declare [
+        sh:prefix "nr" ;
+        sh:namespace "https://nexusretail.databricks.com/ontology#"^^xsd:anyURI ;
+    ] .
+
+# ── Shape B1 (reference SPARQL form) ──────────────────────────────────────────
+nr:FaultyProductReturnShape
+    a sh:NodeShape ;
+    rdfs:label "Faulty-product return integrity (reference)" ;
+    sh:targetClass nr:Return ;
+    sh:sparql [
+        sh:message "Return coded 'faulty_product' but faultyBatchInvolved is not true." ;
+        sh:prefixes <https://nexusretail.databricks.com/ontology> ;
+        sh:select """
+            SELECT $this
+            WHERE {
+                $this nr:returnReasonCode "faulty_product" .
+                FILTER NOT EXISTS { $this nr:faultyBatchInvolved true }
+            }
+        """ ;
+    ] .
+
+# ── Shape B2 (reference SPARQL form) ──────────────────────────────────────────
+nr:BatchMembershipShape
+    a sh:NodeShape ;
+    rdfs:label "Batch membership consistency (reference)" ;
+    sh:targetClass nr:Product ;
+    sh:sparql [
+        sh:message "Product faultyBatch=true but not linked to a FaultyBatch node (or the reverse) — mapping/flag mismatch." ;
+        sh:prefixes <https://nexusretail.databricks.com/ontology> ;
+        sh:select """
+            SELECT $this
+            WHERE {
+                { $this nr:faultyBatch true . FILTER NOT EXISTS { $this nr:memberOfBatch ?b } }
+                UNION
+                { $this nr:memberOfBatch ?b . FILTER NOT EXISTS { $this nr:faultyBatch true } }
+            }
+        """ ;
     ] .
