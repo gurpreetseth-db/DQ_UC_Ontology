@@ -54,28 +54,71 @@ CREATE VOLUME IF NOT EXISTS ${catalog}.ontobricks.OntoBricksRegistry;
 
 ## 2. Clone and deploy OntoBricks
 
+> **Important:** everything in this step happens **inside the cloned OntoBricks
+> repo**, not this DQ_UC_Ontology repo. OntoBricks is a Databricks Labs app with
+> its own bundle (`databricks.yml`), its own `Makefile`, and its own config file
+> `scripts/deploy.config.sh`. You edit *that* file — it is the single source of
+> truth for the deploy.
+
+### 2a. Clone + install
 ```bash
 git clone https://github.com/databrickslabs/ontobricks.git
 cd ontobricks
 uv sync --frozen --extra lakebase        # committed public-PyPI lock
+databricks auth login --host https://dbc-31a46e3c-394b.cloud.databricks.com   # your dev host
 ```
 
-Edit **`scripts/deploy.config.sh`** with the coordinates from step 1 (the file is
-the single source of truth for the deploy — app names, DAB target, SQL warehouse,
-registry catalog/schema/volume, and Lakebase project/branch/database). Then:
+### 2b. Edit `scripts/deploy.config.sh`
+Open `scripts/deploy.config.sh` **in the cloned ontobricks repo** and set the
+values below. It ships with someone else's demo values (catalog `benoit_cayla`,
+instance `08x`, etc.) — replace them. Pre-filled here with the values from this
+repo's `databricks.local.yml`:
 
 ```bash
-databricks auth login --host https://<workspace>
-make deploy-dry-run     # runs all preflight/validate/resource checks, no changes
-make deploy             # deploys + starts the app (Lakebase backend)
+# ── 0a. Instance identity — the app name becomes ontobricks-<id> ─────
+DEFAULT_INSTANCE_ID="nexus01"
+
+# ── 0b. Workspace constants ──────────────────────────────────────────
+DEFAULT_DATABRICKS_PROFILE="Myenv"                 # your ~/.databrickscfg profile
+DEFAULT_WAREHOUSE_ID="6f01c3c8b2af0309"            # your serverless SQL warehouse
+
+# Unity Catalog — the Volume registry (create in step 1b)
+DEFAULT_REGISTRY_CATALOG="gsethi"
+DEFAULT_REGISTRY_SCHEMA="ontobricks"               # matches step 1b schema
+DEFAULT_REGISTRY_VOLUME="OntoBricksRegistry"       # matches step 1b volume
+
+# Lakebase Autoscaling — from step 1a
+DEFAULT_LAKEBASE_PROJECT="ontobricks-app"          # your Autoscaling project name
+DEFAULT_LAKEBASE_BRANCH="main"                     # branch you created
+DEFAULT_LAKEBASE_DATABASE="ontobricks_registry"    # Postgres datname (underscores OK)
+DEFAULT_LAKEBASE_SCHEMA="ontobricks_registry"      # Postgres schema (per-instance)
+```
+> Notes: `DEFAULT_INSTANCE_ID` is the **only** line that must be unique per
+> deployment — the app names (`ontobricks-<id>` + `mcp-ontobricks-<id>`) and the
+> DAB target (`dev-lakebase-<id>`) are derived from it. For `DEFAULT_LAKEBASE_DATABASE`
+> use the `status.postgres_database` value from `databricks postgres list-databases`,
+> **not** the hyphenated `database_id`.
+
+### 2c. Deploy
+```bash
+make deploy-dry-run     # runs ALL preflight/validate/resource checks, no changes
+make deploy             # deploys + starts both apps (main + MCP), Lakebase backend
 ```
 
-After deploy, in the **Databricks Apps UI** bind the app's `sql-warehouse` and
-`volume` resources (and the Lakebase `database` resource) as prompted, then
-`make bootstrap-perms` and `make bootstrap-lakebase` to grant the app service
-principal what it needs.
+### 2d. Bind resources + bootstrap permissions
+`make deploy` provisions two Databricks Apps — `ontobricks-nexus01` (web UI + REST
++ GraphQL) and `mcp-ontobricks-nexus01` (the MCP server). After it finishes:
 
-Open the app URL. You should see the OntoBricks home.
+1. In the **Databricks Apps UI**, confirm each app's bound resources: the
+   `sql-warehouse`, the UC `volume`, and the Lakebase `database`.
+2. Grant the app service principal what it needs:
+   ```bash
+   make bootstrap-perms      # app SP CAN_MANAGE on itself + the analytics job
+   make bootstrap-lakebase   # app SP USAGE/DML on the Lakebase registry schema
+   ```
+3. Open the `ontobricks-nexus01` **App URL** → you should see the OntoBricks home.
+   In **Settings → Initialize** the app creates its `ontobricks_registry` schema
+   in Lakebase on first run.
 
 ---
 
