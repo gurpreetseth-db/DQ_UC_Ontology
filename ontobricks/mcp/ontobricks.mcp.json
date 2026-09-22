@@ -1,0 +1,12 @@
+{
+  "_comment": "Template MCP client config for the deployed OntoBricks MCP companion app. Copy the 'ontobricks' block into your client's config (see ./README.md), then replace <MCP_APP_URL> and the auth token. The MCP server is exposed at /mcp using the Streamable HTTP transport.",
+  "mcpServers": {
+    "ontobricks": {
+      "type": "http",
+      "url": "https://<MCP_APP_URL>/mcp",
+      "headers": {
+        "Authorization": "Bearer <DATABRICKS_TOKEN_OR_OAUTH>"
+      }
+    }
+  }
+}

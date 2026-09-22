@@ -16,6 +16,7 @@ Deployable to **any Databricks workspace** — no hardcoded workspace URLs or ID
 - [Unity Catalog Governance](#unity-catalog-governance)
 - [Metric Views — Semantic Layer](#metric-views--semantic-layer)
 - [Genie One Setup](#genie-one-setup)
+- [Knowledge Graph — OntoBricks](#knowledge-graph--ontobricks)
 - [Deployment Guide](#deployment-guide)
 - [Demo Walkthrough](#demo-walkthrough)
 - [Project Structure](#project-structure)
@@ -432,6 +433,23 @@ databricks bundle run nexus_retail_domains -t dev        # Discover domains + On
 
 ---
 
+## Knowledge Graph — OntoBricks
+
+The Genie Ontology above is the **human-modelled** semantic layer — domains, Pages, and metric views that Genie One cites as context. The [`ontobricks/`](./ontobricks) companion module adds the **machine-reasonable** layer on the same governed data: a knowledge graph built with [OntoBricks](https://github.com/databrickslabs/ontobricks) (Databricks Labs).
+
+```
+gold → metrics  ─►  Genie Ontology   (domains, Pages, metric views)   meaning for HUMANS
+silver star     ─►  OntoBricks graph (triples · OWL · SHACL · MCP)     meaning for MACHINES
+```
+
+OntoBricks turns the silver star schema into RDF triples you can traverse, reason over (OWL 2 RL, SHACL), query (GraphQL), and expose to AI agents over the Model Context Protocol. The Q4-2025 **FAULT-PHON-*** return spike becomes a graph traversal — `FaultyBatch → Product → Order → Customer → Region(APAC-East)` — that an agent walks, scores per customer with governed UC functions, and rolls up by region, every answer explainable back to a triple and a table.
+
+> **OntoBricks is a separate Databricks Labs app** (clone + `make deploy`), so this module ships the *curated artefacts* (a hand-authored OWL ontology matching the concept Pages, a data-mapping crib, SHACL shapes, UC functions, MCP config) and a step-by-step **runbook** — it does not change this bundle or pipeline. It also requires a **Lakebase Autoscaling** database, which the runbook shows how to provision.
+
+**Start here:** [`ontobricks/RUNBOOK.md`](./ontobricks/RUNBOOK.md) · demo talk track: [`ontobricks/demo/DEMO_SCRIPT.md`](./ontobricks/demo/DEMO_SCRIPT.md)
+
+---
+
 ## Deployment Guide
 
 ### Prerequisites
@@ -699,10 +717,24 @@ DQ_UC_Ontology/
 │                                   #   governed comments/tags saved by run_governance.py.
 │                                   #   Reads catalog/warehouse_id/owner_user from job base_parameters.
 │
-└── src/
-    ├── bronze_layer.py             # 18 Auto Loader Streaming Tables (SDP pipeline)
-    ├── silver_layer.py             # DQ quarantine MV + 7 silver tables (native expectations + PII masks)
-    └── gold_layer.py               # 6 gold Materialized Views (CLUSTER BY AUTO, Genie-ready)
+├── src/
+│   ├── bronze_layer.py             # 18 Auto Loader Streaming Tables (SDP pipeline)
+│   ├── silver_layer.py             # DQ quarantine MV + 7 silver tables (native expectations + PII masks)
+│   └── gold_layer.py               # 6 gold Materialized Views (CLUSTER BY AUTO, Genie-ready)
+│
+└── ontobricks/                     # Knowledge Graph companion module (OntoBricks — Databricks Labs)
+    ├── README.md                   # Module overview
+    ├── RUNBOOK.md                  # ★ End-to-end deploy + build + publish + demo (start here)
+    ├── ontology/
+    │   ├── nexusretail.ttl         # Hand-authored OWL ontology matching the Genie concept Pages
+    │   └── MAPPINGS.md             # Class/property → silver table+column crib (guides Auto-Map / R2RML)
+    ├── shacl/
+    │   └── faulty_batch_shapes.ttl # SHACL shapes validating the faulty-batch narrative
+    ├── uc_functions/
+    │   └── virtual_attributes.sql  # Read-only UC functions exposed to agents as MCP virtual attrs + actions
+    ├── mcp/                        # MCP client config template + connection guide
+    └── demo/
+        └── DEMO_SCRIPT.md          # ~10-min three-act talk track
 ```
 
 ### Bundle Jobs Summary

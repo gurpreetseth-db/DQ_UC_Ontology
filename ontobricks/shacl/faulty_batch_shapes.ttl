@@ -1,0 +1,110 @@
+@prefix nr:   <https://nexusretail.databricks.com/ontology#> .
+@prefix sh:   <http://www.w3.org/ns/shacl#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+
+################################################################################
+# NexusRetail SHACL shapes — reasoning / validation over the knowledge graph
+#
+# WHAT THIS IS
+#   SHACL constraints OntoBricks can run under "Build, reason and explore"
+#   (SHACL validation). They encode business/quality rules as graph constraints
+#   — the graph-native complement to the DQX row-level checks in
+#   dqx_rules/silver_rules.yaml. Where DQX quarantines bad ROWS, SHACL flags bad
+#   RELATIONSHIPS and narrative-integrity violations across the whole graph.
+#
+# HOW TO USE
+#   Import alongside nexusretail.ttl. Run SHACL validation after a graph Build.
+#   Each violation report is a demo talking point: "the graph itself proves the
+#   faulty-batch story is internally consistent — and flags anything that isn't."
+################################################################################
+
+# ── Prefix declaration for the SPARQL-based constraints below ─────────────────
+# sh:prefixes points here; sh:declare makes the nr: prefix resolvable inside the
+# sh:select queries (required by the SHACL SPARQL spec).
+<https://nexusretail.databricks.com/ontology>
+    sh:declare [
+        sh:prefix "nr" ;
+        sh:namespace "https://nexusretail.databricks.com/ontology#"^^xsd:anyURI ;
+    ] .
+
+# ── Shape 1: narrative integrity ──────────────────────────────────────────────
+# A Return whose reason is 'faulty_product' SHOULD trace to a Product that is a
+# member of the faulty batch. Violations = returns blamed on the defect that do
+# NOT actually contain a batch product (mis-coded returns worth investigating).
+nr:FaultyProductReturnShape
+    a sh:NodeShape ;
+    rdfs:label "Faulty-product return integrity" ;
+    sh:targetClass nr:Return ;
+    sh:sparql [
+        sh:message "Return coded 'faulty_product' but faultyBatchInvolved is not true — reason code and batch evidence disagree." ;
+        sh:prefixes <https://nexusretail.databricks.com/ontology> ;
+        sh:select """
+            SELECT $this
+            WHERE {
+                $this nr:returnReasonCode "faulty_product" .
+                FILTER NOT EXISTS { $this nr:faultyBatchInvolved true }
+            }
+        """ ;
+    ] .
+
+# ── Shape 2: batch membership is well-formed ──────────────────────────────────
+# Any Product that links to a FaultyBatch MUST have faultyBatch = true, and vice
+# versa the flag and the edge must agree. Catches mapping drift.
+nr:BatchMembershipShape
+    a sh:NodeShape ;
+    rdfs:label "Batch membership consistency" ;
+    sh:targetClass nr:Product ;
+    sh:sparql [
+        sh:message "Product is memberOfBatch but faultyBatch flag is not true (or the reverse) — mapping/flag mismatch." ;
+        sh:prefixes <https://nexusretail.databricks.com/ontology> ;
+        sh:select """
+            SELECT $this
+            WHERE {
+                { $this nr:memberOfBatch ?b . FILTER NOT EXISTS { $this nr:faultyBatch true } }
+                UNION
+                { $this nr:faultyBatch true . FILTER NOT EXISTS { $this nr:memberOfBatch ?b } }
+            }
+        """ ;
+    ] .
+
+# ── Shape 3: invoice reconciliation quality ───────────────────────────────────
+# Every Invoice must carry a total (NULLs were dropped at silver) and a
+# reconciliation flag. A graph-level restatement of the DQX invoice_total_null
+# rule.
+nr:InvoiceQualityShape
+    a sh:NodeShape ;
+    rdfs:label "Invoice completeness" ;
+    sh:targetClass nr:Invoice ;
+    sh:property [
+        sh:path nr:invoiceTotal ;
+        sh:minCount 1 ;
+        sh:datatype xsd:decimal ;
+        sh:message "Invoice has no invoiceTotal — should have been dropped/quarantined at silver." ;
+    ] ;
+    sh:property [
+        sh:path nr:totalReconciled ;
+        sh:minCount 1 ;
+        sh:datatype xsd:boolean ;
+        sh:message "Invoice missing reconciliation flag." ;
+    ] .
+
+# ── Shape 4: order structural completeness ────────────────────────────────────
+# Every Order must be attributable to a Customer and shipped to a Region — the
+# two edges every downstream cohort/traversal query relies on.
+nr:OrderStructureShape
+    a sh:NodeShape ;
+    rdfs:label "Order structural completeness" ;
+    sh:targetClass nr:Order ;
+    sh:property [
+        sh:path nr:placedBy ;
+        sh:minCount 1 ;
+        sh:class nr:Customer ;
+        sh:message "Order has no placedBy Customer — orphaned order." ;
+    ] ;
+    sh:property [
+        sh:path nr:orderShippedToRegion ;
+        sh:minCount 1 ;
+        sh:class nr:Region ;
+        sh:message "Order has no shipping Region — cannot be placed on the geographic traversal." ;
+    ] .

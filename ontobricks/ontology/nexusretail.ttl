@@ -1,0 +1,248 @@
+@prefix nr:   <https://nexusretail.databricks.com/ontology#> .
+@prefix owl:  <http://www.w3.org/2002/07/owl#> .
+@prefix rdf:  <http://www.w3.org/1999/02/22-rdf-syntax-ns#> .
+@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .
+@prefix xsd:  <http://www.w3.org/2001/XMLSchema#> .
+@prefix skos: <http://www.w3.org/2004/02/skos/core#> .
+
+################################################################################
+# NexusRetail Ontology — curated target model for OntoBricks
+#
+# WHAT THIS IS
+#   A hand-authored OWL/RDFS ontology describing the NexusRetail business
+#   domain (customers, orders, products, invoices, returns, geography). It is
+#   the CURATED TARGET for the OntoBricks knowledge graph: import it into the
+#   OntoViz canvas (Ontology > Import > OWL/RDFS) so the graph matches the
+#   governed concept Pages this repo already publishes to Genie One, instead of
+#   relying purely on the LLM Ontology Wizard's auto-generated shape.
+#
+# HOW IT LINES UP WITH THE REST OF THE REPO
+#   • Classes mirror the Discover subdomains + concept Pages defined in
+#     setup/03_domains_setup.py (Sales Performance, Customer Analytics,
+#     Returns & Quality).
+#   • Every class/property carries the SAME business definition (rdfs:comment)
+#     as the UC table/column comments and Genie knowledge snippets.
+#   • The FaultyBatch class + nr:memberOfBatch relationship encode the
+#     Q3-2025 FAULT-PHON-* narrative as a first-class GRAPH TRAVERSAL, so the
+#     "why did returns spike?" story becomes: Product -> FaultyBatch and
+#     Customer -> placedOrder -> Order -> containsProduct -> Product.
+#
+# MAPPING TO DATA
+#   See ontobricks/ontology/MAPPINGS.md — every class and property is mapped to
+#   a silver dim/fact table + column so OntoBricks Auto-Map (or a manual R2RML
+#   mapping) can materialise triples deterministically.
+#
+# NAMESPACE
+#   Uses an example base IRI. If your OntoBricks instance pins a different
+#   ontology base, change the nr: prefix here and in the SHACL shapes.
+################################################################################
+
+<https://nexusretail.databricks.com/ontology>
+    a owl:Ontology ;
+    rdfs:label "NexusRetail Ontology" ;
+    rdfs:comment "Governed business ontology for the NexusRetail global e-commerce platform: customers, orders, products, invoices, returns, and geography across 7 regions and 65 countries. Curated to match the Genie One concept Pages and UC governed tags in the DQ_UC_Ontology repo." ;
+    owl:versionInfo "1.0.0" .
+
+################################################################################
+# CLASSES (entities)
+################################################################################
+
+nr:Customer a owl:Class ;
+    rdfs:label "Customer" ;
+    rdfs:comment "A person or organisation that places orders on NexusRetail. Enriched with demographics and loyalty tier. Source of the Customer Analytics subdomain. Contains PII (masked via UC column masks)." ;
+    skos:altLabel "buyer", "account", "shopper" .
+
+nr:Order a owl:Class ;
+    rdfs:label "Order" ;
+    rdfs:comment "A confirmed purchase transaction. order_total is validated against the sum of line items (±$0.01). Drives Gross Revenue and AOV in the Sales Performance subdomain." ;
+    skos:altLabel "purchase", "transaction", "sale" .
+
+nr:Product a owl:Class ;
+    rdfs:label "Product" ;
+    rdfs:comment "A sellable SKU. 8 Smartphone SKUs (FAULT-PHON-*, product_idx 4-11) carry faultyBatch=true — the root cause of the Q4-2025 return spike." ;
+    skos:altLabel "SKU", "item", "article" .
+
+nr:Invoice a owl:Class ;
+    rdfs:label "Invoice" ;
+    rdfs:comment "A billing document raised against an order. ~52 rows with NULL invoice_total were dropped at silver (DQX rule invoice_total_null) and appear in silver_dq_quarantine." ;
+    skos:altLabel "bill" .
+
+nr:Return a owl:Class ;
+    rdfs:label "Return" ;
+    rdfs:comment "A returned order. 78 of 120 total returns occurred in Q4-2025. return_reason_code='faulty_product' and faulty_batch_involved=true link a return to the defective batch. Core of the Returns & Quality subdomain." ;
+    skos:altLabel "RMA", "product return" .
+
+nr:Category a owl:Class ;
+    rdfs:label "Product Category" ;
+    rdfs:comment "Top-level product classification (12 categories). Carries an avg_return_rate benchmark." .
+
+nr:Subcategory a owl:Class ;
+    rdfs:label "Product Subcategory" ;
+    rdfs:comment "Second-level product classification within a Category." .
+
+nr:Region a owl:Class ;
+    rdfs:label "Region" ;
+    rdfs:comment "A sales region (7 total). APAC-East is where the faulty-batch return spike concentrated." ;
+    skos:altLabel "sales region" .
+
+nr:Country a owl:Class ;
+    rdfs:label "Country" ;
+    rdfs:comment "A country (65 total) belonging to exactly one Region." .
+
+nr:FaultyBatch a owl:Class ;
+    rdfs:label "Faulty Batch" ;
+    rdfs:comment "A defective manufacturing batch. The single instance FAULT-PHON-2025Q3 groups the 8 defective Smartphone SKUs. Modelled as a class (not just a boolean) so the return-spike root cause is a graph node you can traverse to from Product, Order, and Return." ;
+    skos:altLabel "defect batch", "recall batch" .
+
+################################################################################
+# OBJECT PROPERTIES (relationships)
+################################################################################
+
+nr:placedOrder a owl:ObjectProperty ;
+    rdfs:label "placed order" ;
+    rdfs:comment "Connects a Customer to an Order they placed." ;
+    rdfs:domain nr:Customer ;
+    rdfs:range  nr:Order ;
+    owl:inverseOf nr:placedBy .
+
+nr:placedBy a owl:ObjectProperty ;
+    rdfs:label "placed by" ;
+    rdfs:comment "The Customer who placed this Order." ;
+    rdfs:domain nr:Order ;
+    rdfs:range  nr:Customer .
+
+nr:containsProduct a owl:ObjectProperty ;
+    rdfs:label "contains product" ;
+    rdfs:comment "An Order line: the Products purchased in this Order (via order items)." ;
+    rdfs:domain nr:Order ;
+    rdfs:range  nr:Product .
+
+nr:billedByInvoice a owl:ObjectProperty ;
+    rdfs:label "billed by invoice" ;
+    rdfs:comment "The Invoice raised for this Order." ;
+    rdfs:domain nr:Order ;
+    rdfs:range  nr:Invoice ;
+    owl:inverseOf nr:invoicesOrder .
+
+nr:invoicesOrder a owl:ObjectProperty ;
+    rdfs:label "invoices order" ;
+    rdfs:comment "The Order this Invoice bills." ;
+    rdfs:domain nr:Invoice ;
+    rdfs:range  nr:Order .
+
+nr:hasReturn a owl:ObjectProperty ;
+    rdfs:label "has return" ;
+    rdfs:comment "A Return raised against this Order." ;
+    rdfs:domain nr:Order ;
+    rdfs:range  nr:Return ;
+    owl:inverseOf nr:returnsOrder .
+
+nr:returnsOrder a owl:ObjectProperty ;
+    rdfs:label "returns order" ;
+    rdfs:comment "The Order this Return is against." ;
+    rdfs:domain nr:Return ;
+    rdfs:range  nr:Order .
+
+nr:returnsProduct a owl:ObjectProperty ;
+    rdfs:label "returns product" ;
+    rdfs:comment "The Product(s) sent back in this Return (from return_items)." ;
+    rdfs:domain nr:Return ;
+    rdfs:range  nr:Product .
+
+nr:inSubcategory a owl:ObjectProperty ;
+    rdfs:label "in subcategory" ;
+    rdfs:domain nr:Product ;
+    rdfs:range  nr:Subcategory .
+
+nr:inCategory a owl:ObjectProperty ;
+    rdfs:label "in category" ;
+    rdfs:comment "Direct Product -> Category link (denormalised from the product dimension)." ;
+    rdfs:domain nr:Product ;
+    rdfs:range  nr:Category .
+
+nr:subcategoryOf a owl:ObjectProperty ;
+    rdfs:label "subcategory of" ;
+    rdfs:domain nr:Subcategory ;
+    rdfs:range  nr:Category .
+
+nr:memberOfBatch a owl:ObjectProperty ;
+    rdfs:label "member of batch" ;
+    rdfs:comment "Links a Product to the manufacturing batch it belongs to. Only the 8 FAULT-PHON-* SKUs link to FAULT-PHON-2025Q3. THE narrative traversal edge." ;
+    rdfs:domain nr:Product ;
+    rdfs:range  nr:FaultyBatch .
+
+nr:customerLocatedIn a owl:ObjectProperty ;
+    rdfs:label "located in" ;
+    rdfs:comment "The Region a Customer belongs to." ;
+    rdfs:domain nr:Customer ;
+    rdfs:range  nr:Region .
+
+nr:orderShippedToRegion a owl:ObjectProperty ;
+    rdfs:label "shipped to region" ;
+    rdfs:comment "The Region an Order shipped to." ;
+    rdfs:domain nr:Order ;
+    rdfs:range  nr:Region .
+
+nr:countryInRegion a owl:ObjectProperty ;
+    rdfs:label "country in region" ;
+    rdfs:domain nr:Country ;
+    rdfs:range  nr:Region .
+
+################################################################################
+# DATATYPE PROPERTIES (attributes)
+################################################################################
+
+# ── Customer ────────────────────────────────────────────────────────────────
+nr:customerId       a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:string  ; rdfs:label "customer id" .
+nr:customerType     a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:string  ; rdfs:label "customer type" ; rdfs:comment "individual or business." .
+nr:loyaltyTier      a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:string  ; rdfs:label "loyalty tier" ; rdfs:comment "bronze / silver / gold / platinum." .
+nr:ageBracket       a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:string  ; rdfs:label "age bracket" .
+nr:acquisitionChannel a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:string ; rdfs:label "acquisition channel" .
+nr:npsScore         a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:integer ; rdfs:label "NPS score" .
+nr:customerActive   a owl:DatatypeProperty ; rdfs:domain nr:Customer ; rdfs:range xsd:boolean ; rdfs:label "is active" .
+
+# ── Order ─────────────────────────────────────────────────────────────────────
+nr:orderId          a owl:DatatypeProperty ; rdfs:domain nr:Order ; rdfs:range xsd:string  ; rdfs:label "order id" .
+nr:orderDate        a owl:DatatypeProperty ; rdfs:domain nr:Order ; rdfs:range xsd:date    ; rdfs:label "order date" .
+nr:channel          a owl:DatatypeProperty ; rdfs:domain nr:Order ; rdfs:range xsd:string  ; rdfs:label "sales channel" ; rdfs:comment "web (~55%), mobile (~35%), partner_api (~10%)." .
+nr:orderStatus      a owl:DatatypeProperty ; rdfs:domain nr:Order ; rdfs:range xsd:string  ; rdfs:label "status" ; rdfs:comment "delivered / shipped / confirmed / cancelled / pending." .
+nr:orderTotal       a owl:DatatypeProperty ; rdfs:domain nr:Order ; rdfs:range xsd:decimal ; rdfs:label "order total" ; rdfs:comment "Gross order value in USD, discounts applied." .
+nr:itemCount        a owl:DatatypeProperty ; rdfs:domain nr:Order ; rdfs:range xsd:integer ; rdfs:label "item count" .
+
+# ── Product ─────────────────────────────────────────────────────────────────
+nr:productId        a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:string  ; rdfs:label "product id" .
+nr:sku              a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:string  ; rdfs:label "SKU" ; rdfs:comment "Stock keeping unit. FAULT-PHON-* prefix marks the defective batch." .
+nr:productName      a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:string  ; rdfs:label "product name" .
+nr:brand            a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:string  ; rdfs:label "brand" .
+nr:currentPrice     a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:decimal ; rdfs:label "current price" ; rdfs:comment "Most recent effective pricing record (USD)." .
+nr:faultyBatch      a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:boolean ; rdfs:label "faulty batch flag" ; rdfs:comment "TRUE for the 8 FAULT-PHON-* SKUs." .
+nr:productReturnRate a owl:DatatypeProperty ; rdfs:domain nr:Product ; rdfs:range xsd:decimal ; rdfs:label "avg return rate" ; rdfs:comment "Category benchmark return rate for this product." .
+
+# ── Invoice ─────────────────────────────────────────────────────────────────
+nr:invoiceId        a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:string  ; rdfs:label "invoice id" .
+nr:invoiceNumber    a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:string  ; rdfs:label "invoice number" .
+nr:issueDate        a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:date    ; rdfs:label "issue date" .
+nr:dueDate          a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:date    ; rdfs:label "due date" .
+nr:invoiceStatus    a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:string  ; rdfs:label "invoice status" .
+nr:invoiceTotal     a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:decimal ; rdfs:label "invoice total" ; rdfs:comment "USD. NULLs dropped at silver (DQX)." .
+nr:isOverdue        a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:boolean ; rdfs:label "is overdue" .
+nr:totalReconciled  a owl:DatatypeProperty ; rdfs:domain nr:Invoice ; rdfs:range xsd:boolean ; rdfs:label "total reconciled" ; rdfs:comment "invoice_total matches order_total within $0.01." .
+
+# ── Return ────────────────────────────────────────────────────────────────────
+nr:returnId         a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:string  ; rdfs:label "return id" .
+nr:returnDate       a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:date    ; rdfs:label "return date" .
+nr:returnReasonCode a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:string  ; rdfs:label "return reason code" ; rdfs:comment "faulty_product / wrong_item / changed_mind / damaged_in_transit / not_as_described." .
+nr:returnCategory   a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:string  ; rdfs:label "return category" ; rdfs:comment "quality_issue / fulfilment_error / customer_preference." .
+nr:returnStatus     a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:string  ; rdfs:label "return status" .
+nr:refundAmount     a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:decimal ; rdfs:label "refund amount" ; rdfs:comment "USD refunded." .
+nr:faultyBatchInvolved a owl:DatatypeProperty ; rdfs:domain nr:Return ; rdfs:range xsd:boolean ; rdfs:label "faulty batch involved" ; rdfs:comment "TRUE when returned items include FAULT-PHON-* products." .
+
+# ── Category / Region / FaultyBatch ───────────────────────────────────────────
+nr:categoryName     a owl:DatatypeProperty ; rdfs:domain nr:Category ; rdfs:range xsd:string ; rdfs:label "category name" .
+nr:categoryReturnRate a owl:DatatypeProperty ; rdfs:domain nr:Category ; rdfs:range xsd:decimal ; rdfs:label "avg return rate" .
+nr:subcategoryName  a owl:DatatypeProperty ; rdfs:domain nr:Subcategory ; rdfs:range xsd:string ; rdfs:label "subcategory name" .
+nr:regionName       a owl:DatatypeProperty ; rdfs:domain nr:Region ; rdfs:range xsd:string ; rdfs:label "region name" .
+nr:superRegion      a owl:DatatypeProperty ; rdfs:domain nr:Region ; rdfs:range xsd:string ; rdfs:label "super region" .
+nr:countryCode      a owl:DatatypeProperty ; rdfs:domain nr:Country ; rdfs:range xsd:string ; rdfs:label "country code" .
+nr:batchId          a owl:DatatypeProperty ; rdfs:domain nr:FaultyBatch ; rdfs:range xsd:string ; rdfs:label "batch id" .
+nr:batchDefectType  a owl:DatatypeProperty ; rdfs:domain nr:FaultyBatch ; rdfs:range xsd:string ; rdfs:label "defect type" .
