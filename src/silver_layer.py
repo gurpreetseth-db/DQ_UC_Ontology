@@ -8,11 +8,15 @@
 # Schema   : gurpreet_sethi.online_retail_silver
 # DQ rules : Native @dp.expect / @dp.expect_or_drop decorators (enforcement) PLUS
 #            databricks-labs-dqx applied from dqx_rules/silver_rules.yaml, which
-#            drives the silver_dq_quarantine + silver_dq_summary MVs.
+#            drives the per-entity <source_table>_quarantine tables, the combined
+#            silver_dq_quarantine roll-up, and silver_dq_summary.
 # PII      : Column masks applied via MASK functions (governance/01_column_masks.sql)
 #
-# Quarantine: silver_dq_quarantine MV collects records failing DQX checks across
-#             all 8 bronze entities. Run governance/01_column_masks.sql after first
+# Quarantine: one Materialized View PER ENTITY — bronze_customers_quarantine,
+#             bronze_orders_quarantine, bronze_invoices_quarantine, … (8 total) —
+#             each holding only that entity's failing/flagged DQX records.
+#             silver_dq_quarantine is a UNION roll-up over them; silver_dq_summary
+#             aggregates counts. Run governance/01_column_masks.sql after first
 #             pipeline run.
 
 # COMMAND ----------
@@ -89,10 +93,33 @@ def _dqx_input(entity: str):
     return spark.read.table(f"{BRZ}.{DQX_TABLE.get(entity, f'bronze_{entity}')}")
 
 
-def _dqx_quarantine_rows(annotated, entity: str, key_col: str, arr_col: str, severity: str):
+# Fixed 7-column quarantine schema — shared by every <source_table>_quarantine
+# table AND the combined silver_dq_quarantine roll-up, so downstream consumers
+# (Genie, governance, dashboards, alerts) can rely on one stable contract.
+QUARANTINE_SCHEMA = T.StructType([
+    T.StructField("source_table",   T.StringType()),
+    T.StructField("dq_rule",        T.StringType()),
+    T.StructField("severity",       T.StringType()),
+    T.StructField("record_key",     T.StringType()),
+    T.StructField("detail",         T.StringType()),
+    T.StructField("context",        T.StringType()),
+    T.StructField("quarantined_at", T.TimestampType()),
+])
+
+# Per-entity quarantine table names: <source_table>_quarantine, e.g.
+# bronze_customers_quarantine, bronze_invoices_quarantine. Enumerated so the
+# combined roll-up (and any downstream tooling) can list them deterministically.
+QUARANTINE_TABLES = {
+    entity: f"{DQX_TABLE.get(entity, f'bronze_{entity}')}_quarantine"
+    for entity in DQX_KEY
+}
+
+
+def _dqx_quarantine_rows(annotated, source_table: str, key_col: str, arr_col: str, severity: str):
     """Explode a DQX result column (_errors|_warnings) into the fixed 7-column
     quarantine schema. `arr_col` is an array<struct> — explode() keeps only rows
-    that actually failed at least one check."""
+    that actually failed at least one check. `source_table` is stamped verbatim so
+    each row is traceable to its bronze origin (e.g. bronze_product_reviews)."""
     return (
         annotated
         .select(
@@ -100,7 +127,7 @@ def _dqx_quarantine_rows(annotated, entity: str, key_col: str, arr_col: str, sev
             F.explode(F.col(arr_col)).alias("issue"),
         )
         .select(
-            F.lit(f"bronze_{entity}").alias("source_table"),
+            F.lit(source_table).alias("source_table"),
             F.col("issue.name").alias("dq_rule"),
             F.lit(severity).alias("severity"),
             F.col("record_key"),
@@ -110,28 +137,91 @@ def _dqx_quarantine_rows(annotated, entity: str, key_col: str, arr_col: str, sev
         )
     )
 
+
+def _entity_quarantine_df(entity: str, key_col: str, source_table: str):
+    """Run one entity's DQX checks and return the failing/flagged rows in the
+    quarantine schema (errors + warnings). Returns an empty, correctly-typed
+    frame when the entity has no checks in the YAML — so the table still exists
+    with 0 rows (a clean data-health signal) rather than failing the pipeline."""
+    checks = _load_dqx_checks()
+    entity_checks = checks.get(entity)
+    if not entity_checks:
+        return spark.createDataFrame([], QUARANTINE_SCHEMA)
+    engine = DQEngine(WorkspaceClient())
+    annotated = engine.apply_checks_by_metadata(_dqx_input(entity), entity_checks)
+    errors   = _dqx_quarantine_rows(annotated, source_table, key_col, "_errors",   "error")
+    warnings = _dqx_quarantine_rows(annotated, source_table, key_col, "_warnings", "warn")
+    return errors.unionByName(warnings)
+
+
+def _make_entity_quarantine(entity: str, key_col: str):
+    """Factory: register ONE Materialized View per entity, named
+    <source_table>_quarantine (e.g. bronze_customers_quarantine). Each table holds
+    only the records that failed or were flagged by that entity's DQX checks, in
+    the shared 7-column quarantine schema. A non-zero row count is a per-entity
+    data-health alert. Defined via a factory so each closure binds its own entity."""
+    source_table = DQX_TABLE.get(entity, f"bronze_{entity}")
+    table_name   = f"{source_table}_quarantine"
+
+    @dp.materialized_view(
+        name=f"{SLV}.{table_name}",
+        comment=(
+            f"DQX quarantine for {source_table}: every record failing or flagged by a "
+            f"databricks-labs-dqx check for the '{entity}' entity (rules defined in "
+            f"dqx_rules/silver_rules.yaml). Fixed 7-column schema: source_table, dq_rule, "
+            f"severity (error|warn), record_key ({key_col}), detail, context, quarantined_at. "
+            f"A non-zero row count is a data-health alert for {source_table}."
+        ),
+        table_properties={
+            "quality": "silver",
+            "domain": "data_quality",
+            "data_product": "nexus_retail",
+            "quarantine_entity": entity,
+            "quarantine_source": source_table,
+            "alert_on": "nonzero_row_count",
+            "dq_engine": "databricks-labs-dqx",
+        },
+        cluster_by=["dq_rule", "severity"],
+    )
+    def _entity_quarantine():
+        return _entity_quarantine_df(entity, key_col, source_table)
+
+    # Unique function identity per registered dataset (name= drives the table name,
+    # but keep __name__ distinct to avoid confusing the pipeline graph).
+    _entity_quarantine.__name__ = table_name
+    return _entity_quarantine
+
+
+# Register the per-entity quarantine tables (one Materialized View per entity).
+for _entity, _key_col in DQX_KEY.items():
+    _make_entity_quarantine(_entity, _key_col)
+
 # ─────────────────────────────────────────────────────────────────────────────
-# DQ QUARANTINE  (Materialized View — DQX-driven bad-record capture)
-# Every failing/flagged row is computed by the databricks-labs-dqx engine from
-# the rules in dqx_rules/silver_rules.yaml — NOT hardcoded. Covers all 8 entities
-# (customers, orders, invoices, products, order_items, returns, payments,
-# reviews). The seeded demo issues surface here as real DQX results:
+# DQ QUARANTINE  (Materialized View — combined roll-up over per-entity tables)
+# This is now a UNION of the per-entity <source_table>_quarantine tables above,
+# NOT a re-computation — DQX runs once per entity, and this view stitches the
+# results into one cross-entity table. Covers all 8 bronze entities (customers,
+# orders, invoices, products, order_items, returns, payments, reviews). The
+# seeded demo issues surface as real DQX results:
 #   • ~52 invoices with NULL invoice_total   → rule invoice_total_not_null (error)
 #   • 3 customers sharing an email           → rule email_unique          (warn)
 #   • ~43 payments with status='failed'      → rule failed_payment_flag   (warn)
 # Schema is intentionally stable (7 columns) — Genie, Domains and governance
-# reference this table by name + schema.
+# reference this table by name + schema. Per-entity detail lives in the
+# <source_table>_quarantine tables (e.g. bronze_customers_quarantine).
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
     name=f"{SLV}.silver_dq_quarantine",
-    comment="DQX-driven quarantine: every row failing or flagged by a databricks-labs-dqx "
-            "check defined in dqx_rules/silver_rules.yaml, across all 8 bronze entities. "
+    comment="Combined DQX quarantine roll-up: a UNION of the per-entity "
+            "<source_table>_quarantine tables (bronze_customers_quarantine, "
+            "bronze_invoices_quarantine, …) across all 8 bronze entities. "
             "Columns: source_table, dq_rule (DQX check name), severity (error|warn), "
             "record_key (entity PK), detail (DQX message), context (columns involved), "
             "quarantined_at. Seeded demo issues surface as real results: ~52 "
             "invoice_total_not_null (error), 3 email_unique (warn), ~43 failed_payment_flag "
-            "(warn). Row count > 0 should trigger an alert. Monitor this table.",
+            "(warn). Row count > 0 should trigger an alert. For per-entity triage, query the "
+            "individual <source_table>_quarantine tables. Monitor this table.",
     table_properties={
         "quality": "silver",
         "domain": "data_quality",
@@ -142,20 +232,10 @@ def _dqx_quarantine_rows(annotated, entity: str, key_col: str, arr_col: str, sev
     cluster_by=["source_table", "dq_rule"],
 )
 def silver_dq_quarantine():
-    checks = _load_dqx_checks()
-    engine = DQEngine(WorkspaceClient())
-    parts = []
-    for entity, key_col in DQX_KEY.items():
-        entity_checks = checks.get(entity)
-        if not entity_checks:
-            continue
-        annotated = engine.apply_checks_by_metadata(_dqx_input(entity), entity_checks)
-        parts.append(_dqx_quarantine_rows(annotated, entity, key_col, "_errors", "error"))
-        parts.append(_dqx_quarantine_rows(annotated, entity, key_col, "_warnings", "warn"))
-
-    result = parts[0]
-    for part in parts[1:]:
-        result = result.unionByName(part)
+    frames = [spark.read.table(f"{SLV}.{table}") for table in QUARANTINE_TABLES.values()]
+    result = frames[0]
+    for frame in frames[1:]:
+        result = result.unionByName(frame)
     return result
 
 

@@ -661,15 +661,20 @@ CURATED_PAGES = [
         "name": "DQ Quarantine", "domain": f"{PARENT_TAG}/returns_quality",
         "synonyms": ["data quality quarantine", "quarantine table", "bad records", "data quality"],
         "definition": (
-            "The `silver_dq_quarantine` view capturing 139 records that failed critical "
-            "data-quality checks — the source of truth for data-health questions."
+            "The quarantine layer capturing 139 records that failed critical data-quality "
+            "checks — the source of truth for data-health questions. Split per entity into "
+            "`<source_table>_quarantine` tables, with a combined `silver_dq_quarantine` roll-up."
         ),
         "calculation": (
             "Group `silver_dq_quarantine` by `source_table, dq_rule, severity`. Contents: "
             "~52 NULL invoice totals (dropped), 3 duplicate customer emails, ~43 failed "
-            "payments, and 41 faulty_product return flags — **139** total."
+            "payments, and 41 faulty_product return flags — **139** total. For per-entity "
+            "triage, query e.g. `bronze_customers_quarantine` or `bronze_invoices_quarantine`."
         ),
-        "lives_in": "`silver_dq_quarantine` (7-column quarantine schema).",
+        "lives_in": (
+            "Per-entity: `bronze_customers_quarantine`, `bronze_invoices_quarantine`, … (8 tables). "
+            "Combined roll-up: `silver_dq_quarantine`. All share the same 7-column schema."
+        ),
         "benchmark": "A non-zero row count is a data-health alert; the seeded demo total is 139.",
         "use_cases": [
             "Show the data-quality quarantine summary — how many records failed each rule?",

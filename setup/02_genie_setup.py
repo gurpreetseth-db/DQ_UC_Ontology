@@ -215,8 +215,15 @@ Three intentional data quality issues are embedded in the dataset for demo purpo
    - bronze_payments has ~43 rows with payment_status = 'failed' (~3%)
    - Flagged in silver_dq_quarantine (rule: failed_payment)
 
-Total quarantined: 139 records in silver_dq_quarantine.
-When asked about data quality, reference this table as the source of truth.
+Total quarantined: 139 records.
+Quarantine layout:
+  - Per-entity tables: <source_table>_quarantine (bronze_customers_quarantine,
+    bronze_invoices_quarantine, bronze_payments_quarantine, …) — one per bronze
+    entity, holding only that entity's failing/flagged records.
+  - Combined roll-up: silver_dq_quarantine = UNION of the per-entity tables.
+  - Rollup counts: silver_dq_summary (per source_table, dq_rule, severity).
+When asked about data quality overall, use silver_dq_quarantine; for a single
+entity, query its <source_table>_quarantine table. These are the source of truth.
 """.strip(),
     },
     {
@@ -252,7 +259,7 @@ RETURNS & QUALITY
   Total Refund Amount    → MEASURE(`Total Refund Amount`)      metrics_product_kpis
   Avg Days to Return     → MEASURE(`Avg Days to Return`)       metrics_product_kpis
   Cancellation Rate      → cancellation_rate_pct [COLUMN]      mv_regional_orders
-  DQ Quarantine          → group silver_dq_quarantine by (source_table, dq_rule, severity)
+  DQ Quarantine          → silver_dq_quarantine (all entities) or <source_table>_quarantine (one entity)
 
 Rule of thumb: measures need MEASURE(); stored columns use SUM()/AVG(). Metric views
 are the certified surface — reach for gold/mv_* only for cuts the metric views lack.
