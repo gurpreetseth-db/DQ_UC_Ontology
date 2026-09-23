@@ -616,11 +616,13 @@ TABLE_METADATA = {
     },
     f"`{C}`.online_retail_silver.silver_dq_quarantine": {
         "comment":
-            "DQX-style quarantine MV — captures all records failing critical data quality checks. "
-            "Current contents: ~52 NULL invoice totals, 3 duplicate customer emails, "
-            "~43 failed payments, 41 faulty_product return flags. Total: 139 records. "
-            "Row count > 0 should trigger a data quality alert. "
-            "Monitor this table after every pipeline run as a data health KPI.",
+            "Combined DQX quarantine roll-up — UNION of the per-entity "
+            "<source_table>_quarantine tables (bronze_customers_quarantine, "
+            "bronze_invoices_quarantine, …). Captures all records failing critical data "
+            "quality checks. Current contents: ~52 NULL invoice totals, 3 duplicate customer "
+            "emails, ~43 failed payments, 41 faulty_product return flags. Total: 139 records. "
+            "Row count > 0 should trigger a data quality alert. For per-entity triage, query "
+            "the individual <source_table>_quarantine tables. Monitor after every pipeline run.",
         "tags": {"quality_tier": "silver", "domain": "data_quality", "alert_on": "nonzero_row_count",
                  "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "all", "table_type": "quality"},
     },
@@ -746,6 +748,34 @@ TABLE_METADATA = {
                  "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "returns_quality", "table_type": "semantic"},
     },
 }
+
+# ── Per-entity DQX quarantine tables ──────────────────────────────────────────
+# src/silver_layer.py registers one Materialized View per entity, named
+# <source_table>_quarantine. Add governance (comment + tags) for each so they are
+# documented and discoverable alongside the combined silver_dq_quarantine roll-up.
+_QUARANTINE_ENTITIES = {
+    # entity        source_table                 primary key (record_key)
+    "customers":   ("bronze_customers",           "customer_id"),
+    "orders":      ("bronze_orders",              "order_id"),
+    "invoices":    ("bronze_invoices",            "invoice_id"),
+    "products":    ("bronze_products",            "product_id"),
+    "order_items": ("bronze_order_items",         "line_id"),
+    "returns":     ("bronze_returns",             "return_id"),
+    "payments":    ("bronze_payments",            "payment_id"),
+    "reviews":     ("bronze_product_reviews",     "review_id"),
+}
+for _entity, (_src, _pk) in _QUARANTINE_ENTITIES.items():
+    TABLE_METADATA[f"`{C}`.online_retail_silver.{_src}_quarantine"] = {
+        "comment":
+            f"Per-entity DQX quarantine for {_src}: records failing or flagged by the "
+            f"'{_entity}' entity's databricks-labs-dqx checks (dqx_rules/silver_rules.yaml). "
+            f"Fixed 7-column schema (source_table, dq_rule, severity, record_key={_pk}, detail, "
+            f"context, quarantined_at). A non-zero row count is a data-health alert for {_src}. "
+            f"Also rolled up into silver_dq_quarantine.",
+        "tags": {"quality_tier": "silver", "domain": "data_quality", "alert_on": "nonzero_row_count",
+                 "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "all",
+                 "table_type": "quality", "quarantine_entity": _entity, "quarantine_source": _src},
+    }
 
 # ── Column-level tags for PII columns ─────────────────────────────────────────
 PII_COLUMN_TAGS = {

@@ -36,7 +36,7 @@ flowchart LR
 | Layer | What you get |
 |---|---|
 | **Pipeline** | Lakeflow SDP — 18 bronze streaming tables → 8 silver datasets → 6 gold MVs (32 Delta tables) |
-| **Data quality** | Native SDP expectations + a rule-driven `databricks-labs-dqx` quarantine (139 records caught) |
+| **Data quality** | Native SDP expectations + rule-driven `databricks-labs-dqx` **per-entity quarantine** tables (`<source_table>_quarantine`) rolled up into one view (139 records caught) |
 | **Governance** | UC column masks (PII), tags, table/column comments, grants — on all 32 tables |
 | **Semantic layer** | 3 governed metric views (`WITH METRICS LANGUAGE YAML`) + 3 UC materialized views |
 | **Ontology** | `Online Retail` domain + 3 subdomains + a **30-term business glossary** for Genie |
@@ -147,7 +147,9 @@ erDiagram
 
 | Dataset | Type | Key logic |
 |---|---|---|
-| `silver_dq_quarantine` | MV | DQX bad-record capture across 8 entities |
+| `<source_table>_quarantine` ×8 | MV | **Per-entity DQX quarantine** — one table per bronze entity (`bronze_customers_quarantine`, `bronze_invoices_quarantine`, …) holding only that entity's failing/flagged records |
+| `silver_dq_quarantine` | MV | Combined roll-up — `UNION` over the 8 per-entity quarantine tables |
+| `silver_dq_summary` | MV | Failing-record counts per (source_table, dq_rule, severity) |
 | `silver_dim_date` / `silver_dim_geography` | MV | Date spine · country→region→super-region |
 | `silver_dim_products` | ST | Flattened category hierarchy + current price |
 | `silver_dim_customers` | ST | Auto CDC SCD-1 + demographics; **PII masks** |
@@ -245,6 +247,10 @@ Replace `<catalog>` with your catalog. More verified queries live in `setup/02_g
 SELECT source_table, dq_rule, severity, COUNT(*) AS record_count
 FROM <catalog>.online_retail_silver.silver_dq_quarantine
 GROUP BY ALL ORDER BY severity, dq_rule;
+
+-- 1b. Per-entity triage: inspect just the customer quarantine
+SELECT dq_rule, severity, record_key, detail
+FROM <catalog>.online_retail_silver.bronze_customers_quarantine;
 
 -- 2. The return anomaly: faulty batch vs normal, from Q3 2025
 SELECT `Return Month`, `Faulty Batch`, MEASURE(`Return Rate`) AS return_rate
