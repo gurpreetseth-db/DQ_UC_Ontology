@@ -16,6 +16,21 @@ flowchart LR
     MET --> GEN["🧠 Genie One<br/>NL analytics"]
     ONT["📖 Discover Ontology<br/>4 domains · 30-term glossary"] -. "authoritative context" .-> GEN
     MET -. "backs" .-> ONT
+
+    classDef raw fill:#ECEFF1,stroke:#607D8B,color:#111
+    classDef bronze fill:#F3D9B1,stroke:#A9743B,color:#111
+    classDef silver fill:#E0E4E7,stroke:#78909C,color:#111
+    classDef gold fill:#FCE9A6,stroke:#C9A227,color:#111
+    classDef metrics fill:#D2E3FC,stroke:#1565C0,color:#111
+    classDef genie fill:#E1D5F5,stroke:#6A1B9A,color:#111
+    classDef onto fill:#CDEBD3,stroke:#1B5E20,color:#111
+    class RAW raw
+    class BRZ bronze
+    class SLV silver
+    class GLD gold
+    class MET metrics
+    class GEN genie
+    class ONT onto
 ```
 
 | Layer | What you get |
@@ -58,6 +73,19 @@ flowchart TB
     K --> M["📐 MEASURE('Return Rate')<br/>on metrics_product_kpis<br/>filtered: Faulty Batch, Q4 2025"]
     P --> M
     M --> A["✅ Answer + generated SQL<br/>+ cited glossary definition"]
+
+    classDef ask fill:#FFF3CD,stroke:#B8860B,color:#111
+    classDef genie fill:#E1D5F5,stroke:#6A1B9A,color:#111
+    classDef ctx fill:#D2E3FC,stroke:#1565C0,color:#111
+    classDef page fill:#CDEBD3,stroke:#1B5E20,color:#111
+    classDef measure fill:#FCE9A6,stroke:#C9A227,color:#111
+    classDef answer fill:#C8E6C9,stroke:#2E7D32,color:#111
+    class Q ask
+    class G genie
+    class K ctx
+    class P page
+    class M measure
+    class A answer
 ```
 
 Every glossary Page carries **definition · how it's calculated (exact `MEASURE()`/column) · where it lives (MV + grain) · benchmarks · the questions it answers · related terms**. Built by `setup/03_domains_setup.py` into a bulk-import file; the Genie space snippets in `setup/02_genie_setup.py` mirror the same definitions.
