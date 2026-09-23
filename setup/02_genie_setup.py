@@ -33,11 +33,15 @@ CATALOG = dbutils.widgets.get("catalog")
 SPACE_TITLE       = "NexusRetail Analytics"
 SPACE_DESCRIPTION = """
 Conversational analytics for NexusRetail — a global e-commerce platform selling
-200+ products across 7 regions and 65 countries. Ask natural language questions about
-sales performance, customer behaviour, and product returns.
+173 products across 12 categories, 7 regions, and 65 countries. Ask natural language
+questions about sales performance, customer behaviour, and product returns.
 
-Data covers 24 months (Sep 2024 – Sep 2026), with a known Q3 2025 electronics
-defect batch (FAULT-* SKUs) that caused a Q4 2025 return spike in APAC-East.
+Data covers 24 months (Sep 2024 – Sep 2026), with a known Q3 2025 smartphone defect
+batch (FAULT-PHON-* SKUs) that caused a Q4 2025 return spike in APAC-East.
+
+This space is backed by the online_retail_metrics semantic layer and the published
+Discover Ontology Pages (a governed business glossary). Prefer the metric views and
+cite the glossary definitions when answering.
 """
 
 # Data sources for this Genie space (tables from gold + metrics schema)
@@ -66,8 +70,8 @@ KNOWLEDGE_SNIPPETS = [
         "title": "Data Model Overview",
         "content": """
 NexusRetail operates across 7 regions (AMER-North, AMER-South, EMEA-West, EMEA-East,
-APAC-East, APAC-South, MENA) and 65 countries. 200 products span 12 categories and
-55 subcategories. 600 customers (500 B2C, 100 B2B).
+APAC-East, APAC-South, MENA) and 65 countries. 173 products span 12 categories and
+50 subcategories. 600 customers (~500 B2C, ~100 B2B).
 
 All data lives in catalog: {CATALOG}.
 
@@ -94,7 +98,13 @@ GROSS REVENUE = SUM(gross_revenue) from delivered/shipped/confirmed orders.
 NET REVENUE   = gross_revenue minus refund_total (deducts refunds for returns).
 Discounts are already applied in gross_revenue (line_total = qty * price * (1 - discount)).
 
-For Metric Views use: MEASURE(`Gross Revenue`) or MEASURE(`Order Count`)
+IMPORTANT — how to query each:
+  - Gross Revenue IS a metric-view measure: MEASURE(`Gross Revenue`) in metrics_sales_kpis.
+  - Net Revenue is NOT a measure. It is a stored COLUMN: SUM(net_revenue) in
+    mv_regional_orders / mv_category_revenue (do not call MEASURE on it).
+  - Order Count: MEASURE(`Order Count`) in metrics_sales_kpis / metrics_customer_kpis.
+  - metrics_sales_kpis has NO Category dimension (its grain is day x channel x region).
+    For revenue by product category, use mv_category_revenue (SUM(gross_revenue)).
 For gold tables use: SUM(gross_revenue), SUM(order_count)
 
 Fiscal year = calendar year. Q4 = October through December (seasonal peak: +40-50% volume).
@@ -121,8 +131,9 @@ THE FAULTY BATCH (key story):
   - Filter: faulty_batch = TRUE in gold_return_analysis or silver_dim_products
   - DQX quarantine captured 41 'faulty_product' reason codes in silver_dq_quarantine
 
-To investigate: filter on faulty_batch='Defective (FAULT-PHON-*)' in metrics_product_kpis
-or return_reason_code='faulty_product' in gold_return_analysis.
+To investigate: in metrics_product_kpis filter the `Faulty Batch` dimension to
+'Faulty Batch (FAULT-*)' (that is the exact dimension value; 'Normal Product' is the
+other value), or filter return_reason_code='faulty_product' in gold_return_analysis.
 """.strip(),
     },
     {
@@ -208,6 +219,69 @@ Total quarantined: 139 records in silver_dq_quarantine.
 When asked about data quality, reference this table as the source of truth.
 """.strip(),
     },
+    {
+        "title": "Semantic Layer Cheat Sheet (term → measure → table)",
+        "content": """
+Map the business term to the exact measure/column and table. This mirrors the
+published Discover Ontology Pages — use it to pick the right query surface.
+
+SALES PERFORMANCE
+  Gross Revenue          → MEASURE(`Gross Revenue`)            metrics_sales_kpis
+  Net Revenue            → SUM(net_revenue) [COLUMN]           mv_regional_orders / mv_category_revenue
+  Average Order Value    → MEASURE(`Avg Order Value`)          metrics_sales_kpis / metrics_customer_kpis
+  Order Count            → MEASURE(`Order Count`)              metrics_sales_kpis
+  Units Sold             → SUM(units_sold) [COLUMN]            mv_category_revenue
+  Total Discount         → SUM(total_discount) [COLUMN]        mv_category_revenue
+  Sales Channel          → dimension `Channel` (web|mobile|partner_api)   metrics_sales_kpis
+  New / Returning Cust.  → MEASURE(`New Customer Count`) / MEASURE(`Returning Customer Count`)  metrics_sales_kpis
+  Revenue per Customer   → MEASURE(`Revenue per Customer`)     metrics_sales_kpis / metrics_customer_kpis
+
+CUSTOMER ANALYTICS
+  Customer Lifetime Value→ total_revenue, clv_segment          gold_customer_lifetime_value (1 row/customer)
+  CLV Segment            → clv_segment (High|Medium|Low|Churned)  gold_customer_lifetime_value
+  Loyalty Tier           → dimension `Loyalty Tier`            metrics_customer_kpis
+  Repeat Purchase Rate   → MEASURE(`Repeat Purchase Rate`)     metrics_customer_kpis
+  Acquisition Channel    → dimension `Acquisition Channel`     metrics_customer_kpis
+  Customer Type          → dimension `Customer Type` (B2C|B2B) metrics_customer_kpis
+  Age / Income Bracket   → dimensions `Age Bracket` / `Income Bracket`  metrics_customer_kpis
+
+RETURNS & QUALITY
+  Return Rate            → MEASURE(`Return Rate`)              metrics_product_kpis (also return_rate_pct in mv_regional_orders)
+  Faulty Batch           → dimension `Faulty Batch` ('Faulty Batch (FAULT-*)' | 'Normal Product')  metrics_product_kpis
+  Return Reason          → dimension `Return Reason`           metrics_product_kpis
+  Total Refund Amount    → MEASURE(`Total Refund Amount`)      metrics_product_kpis
+  Avg Days to Return     → MEASURE(`Avg Days to Return`)       metrics_product_kpis
+  Cancellation Rate      → cancellation_rate_pct [COLUMN]      mv_regional_orders
+  DQ Quarantine          → group silver_dq_quarantine by (source_table, dq_rule, severity)
+
+Rule of thumb: measures need MEASURE(); stored columns use SUM()/AVG(). Metric views
+are the certified surface — reach for gold/mv_* only for cuts the metric views lack.
+""".strip(),
+    },
+    {
+        "title": "Discover Ontology Pages (authoritative glossary)",
+        "content": """
+This space is governed by published Discover Ontology Pages — a business glossary of
+30 concept terms grouped into the Online Retail domain and its 3 subdomains
+(Sales Performance, Customer Analytics, Returns & Quality). Each Page defines a term,
+its calculation, where it lives, benchmarks/thresholds, and the questions it answers.
+
+Treat these Page definitions as the source of truth for business meaning. When a term
+below is used, apply the Page's definition exactly:
+  Sales:    Gross Revenue, Net Revenue, Average Order Value, Order Count, Units Sold,
+            Total Discount, Sales Channel, New vs Returning Customer, Revenue per Customer,
+            Q4 Seasonal Peak
+  Customer: Customer Lifetime Value, CLV Segment, Loyalty Tier, Repeat Purchase Rate,
+            Acquisition Channel, Customer Type (B2C/B2B), Demographic Segments
+  Returns:  Return Rate, Faulty Batch (FAULT-PHON-*), Q4 2025 Return Spike, Return Reason,
+            Total Refund Amount, Avg Days to Return, Cancellation Rate, DQ Quarantine
+  Cross:    Region & Country Hierarchy, Product Category Taxonomy, Fiscal Calendar,
+            PII Masking & GDPR, Medallion Layers
+
+If a question matches a glossary term, use the measure/table named on its Page and, where
+helpful, mention the definition (e.g. "Churned = no order in 180+ days").
+""".strip(),
+    },
 ]
 
 
@@ -222,57 +296,127 @@ SAMPLE_QUESTIONS = [
     "Which age group has the highest average order value?",
     "Show me revenue by loyalty tier over the last 6 months",
     "Why is the Electronics return rate elevated in Q4 2025?",
-    "Show return rate by product SKU with more than 20% return rate",
+    "Show return rate by product SKU with more than 25% return rate",
     "Which region has the highest return rate?",
     "How many support tickets were raised for product defects in Q4 2025?",
 ]
 
-# These are the SQL examples explicitly provided in your snippets.
+# Verified question → SQL examples, one per glossary "use it to answer" pattern.
+# {CATALOG} is normalised to the real catalog below (see NORMALISE step). Each query
+# uses the exact measure/dimension named on the matching Discover Ontology Page:
+#   - measures via MEASURE(); stored columns via SUM()/AVG()
+#   - GROUP BY ALL / ORDER BY ALL is required for metric-view MEASURE() queries
 EXAMPLE_QUESTION_SQLS = [
     {
-        "question": "Revenue by region and month?",
+        "question": "Show gross revenue by region and quarter for 2025-2026",
         "sql": """
- SELECT `Sale Month`, `Region`, MEASURE(`Gross Revenue`) AS revenue
-  FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
-  WHERE YEAR(`Sale Month`) = 2025
-  GROUP BY ALL ORDER BY ALL
+SELECT `Sale Quarter`, `Region`, MEASURE(`Gross Revenue`) AS revenue
+FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
+WHERE YEAR(`Sale Quarter`) IN (2025, 2026)
+GROUP BY ALL ORDER BY ALL
 """,
-   },
+    },
     {
-        "question": "Show category revenue by month for 2025",
+        "question": "Which channel drives the highest average order value?",
         "sql": """
-SELECT
-  `Sale Month`,
-  `Category`,
-  MEASURE(`Gross Revenue`) AS revenue
-FROM gurpreet_sethi.online_retail_metrics.metrics_sales_kpis
-WHERE YEAR(`Sale Month`) = 2025
-GROUP BY ALL
-ORDER BY ALL
+SELECT `Channel`, MEASURE(`Avg Order Value`) AS avg_order_value
+FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
+GROUP BY ALL ORDER BY avg_order_value DESC
+""",
+    },
+    {
+        "question": "How many new vs returning customers by quarter?",
+        "sql": """
+SELECT `Sale Quarter`,
+       MEASURE(`New Customer Count`)       AS new_customers,
+       MEASURE(`Returning Customer Count`) AS returning_customers
+FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
+GROUP BY ALL ORDER BY ALL
+""",
+    },
+    {
+        "question": "Show product category revenue by month for 2025",
+        "sql": """
+-- metrics_sales_kpis has NO Category dimension; category revenue lives in mv_category_revenue
+SELECT category_name, sale_month, SUM(gross_revenue) AS revenue
+FROM {CATALOG}.online_retail_metrics.mv_category_revenue
+WHERE YEAR(sale_month) = 2025
+GROUP BY ALL ORDER BY ALL
+""",
+    },
+    {
+        "question": "What is net revenue after returns by region in Q4 2025?",
+        "sql": """
+-- Net Revenue is a COLUMN (not a measure): SUM(net_revenue)
+SELECT region_name,
+       SUM(gross_revenue) AS gross_revenue,
+       SUM(net_revenue)   AS net_revenue,
+       SUM(refund_total)  AS refunds
+FROM {CATALOG}.online_retail_metrics.mv_regional_orders
+WHERE sale_month >= DATE '2025-10-01' AND sale_month < DATE '2026-01-01'
+GROUP BY ALL ORDER BY net_revenue DESC
+""",
+    },
+    {
+        "question": "What is the repeat purchase rate for Platinum vs Bronze loyalty tier?",
+        "sql": """
+SELECT `Loyalty Tier`, MEASURE(`Repeat Purchase Rate`) AS repeat_rate
+FROM {CATALOG}.online_retail_metrics.metrics_customer_kpis
+GROUP BY ALL ORDER BY repeat_rate DESC
+""",
+    },
+    {
+        "question": "Show revenue by loyalty tier over time",
+        "sql": """
+SELECT `Loyalty Tier`, `Month`, MEASURE(`Revenue`) AS revenue
+FROM {CATALOG}.online_retail_metrics.metrics_customer_kpis
+GROUP BY ALL ORDER BY ALL
+""",
+    },
+    {
+        "question": "How many customers fall into each CLV segment?",
+        "sql": """
+SELECT clv_segment,
+       COUNT(*)                     AS customers,
+       ROUND(AVG(total_revenue), 2) AS avg_lifetime_revenue
+FROM {CATALOG}.online_retail_gold.gold_customer_lifetime_value
+GROUP BY ALL ORDER BY customers DESC
 """,
     },
     {
         "question": "Show return rate by product category and faulty batch",
         "sql": """
-SELECT
-  `Category`,
-  `Faulty Batch`,
-  MEASURE(`Return Rate`) AS return_rate
-FROM gurpreet_sethi.online_retail_metrics.metrics_product_kpis
-GROUP BY ALL
-ORDER BY ALL
+SELECT `Category`, `Faulty Batch`, MEASURE(`Return Rate`) AS return_rate
+FROM {CATALOG}.online_retail_metrics.metrics_product_kpis
+GROUP BY ALL ORDER BY return_rate DESC
 """,
     },
     {
-        "question": "Show revenue by loyalty tier",
+        "question": "Why is the Electronics return rate elevated in Q4 2025?",
         "sql": """
-SELECT
-  `Loyalty Tier`,
-  `Month`,
-  MEASURE(`Revenue`) AS revenue
-FROM gurpreet_sethi.online_retail_metrics.metrics_customer_kpis
-GROUP BY ALL
-ORDER BY ALL
+SELECT `Return Month`, `Faulty Batch`,
+       MEASURE(`Return Rate`)  AS return_rate,
+       MEASURE(`Return Count`) AS returns
+FROM {CATALOG}.online_retail_metrics.metrics_product_kpis
+WHERE `Category` = 'Electronics' AND `Return Month` >= DATE '2025-07-01'
+GROUP BY ALL ORDER BY `Return Month`
+""",
+    },
+    {
+        "question": "Which region has the highest cancellation rate?",
+        "sql": """
+-- Cancellation Rate is a COLUMN: AVG(cancellation_rate_pct)
+SELECT region_name, ROUND(AVG(cancellation_rate_pct), 2) AS cancellation_rate_pct
+FROM {CATALOG}.online_retail_metrics.mv_regional_orders
+GROUP BY ALL ORDER BY cancellation_rate_pct DESC
+""",
+    },
+    {
+        "question": "Show the data quality quarantine summary by rule",
+        "sql": """
+SELECT source_table, dq_rule, severity, COUNT(*) AS record_count
+FROM {CATALOG}.online_retail_silver.silver_dq_quarantine
+GROUP BY ALL ORDER BY severity, dq_rule
 """,
     },
 ]
@@ -331,6 +475,15 @@ PAGES = [
         ],
     },
 ]
+
+# ── NORMALISE {CATALOG} placeholder ───────────────────────────────────────────
+# KNOWLEDGE_SNIPPETS and EXAMPLE_QUESTION_SQLS are plain (non-f) strings so the
+# body stays readable; substitute the real catalog here so nothing ships the
+# literal "{CATALOG}" token to Genie.
+for _snip in KNOWLEDGE_SNIPPETS:
+    _snip["content"] = _snip["content"].replace("{CATALOG}", CATALOG)
+for _ex in EXAMPLE_QUESTION_SQLS:
+    _ex["sql"] = _ex["sql"].replace("{CATALOG}", CATALOG)
 
 # COMMAND ----------
 
