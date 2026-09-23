@@ -383,6 +383,8 @@ Source: `gold_return_analysis`
 
 The "NexusRetail Analytics" Genie space, backed by the metric views, plus a Unity Catalog **Discover ontology** (domains + Pages) that Genie One reads as authoritative context. The three business areas below map to the three Discover **subdomains** created in Step 6.
 
+The Pages are a **true business glossary** — not one-line definitions. Each concept Page (Gross Revenue, Return Rate, Customer Lifetime Value, Faulty Batch, …) carries a plain-business definition, *how it's calculated* (the exact `MEASURE()`/column), *where it lives* (which metric view + grain), *benchmarks & thresholds*, and a **"Use it to answer"** list of the real natural-language questions it maps to. That last block is what makes the ontology "kick in": it gives Genie One a term → measure lookup, so a question like *"why is the Electronics return rate elevated?"* resolves to `MEASURE(\`Return Rate\`)` on `metrics_product_kpis` filtered to the faulty batch — with the Page cited as the source.
+
 ### Data Sources
 
 ```
@@ -413,7 +415,7 @@ Each area is a Discover subdomain (`online_retail/…`) with its own associated 
 
 **↩️ Returns & Quality**
 - "Why is the Electronics return rate elevated in Q4 2025?"
-- "Show return rate by product SKU — which products have a rate above 20%?"
+- "Show return rate by product SKU — which products have a rate above 25%?"
 - "How many support tickets were raised for product defects in Q4 2025?"
 
 ### Automated Setup
@@ -426,7 +428,7 @@ databricks bundle run nexus_retail_domains -t dev        # Discover domains + On
 ```
 
 - **`nexus_retail_genie_setup`** creates the Genie space, wires all 12 data sources, and adds knowledge snippets + sample questions.
-- **`nexus_retail_domains`** creates the `Online Retail` parent domain + 3 subdomains (each auto-populated by the governed tags applied in Step 4) and generates the **Genie Ontology Pages** bulk-import file. Import it via **Discover ▸ Pages ▸ Genie Code ▸ Bulk import pages** and Publish.
+- **`nexus_retail_domains`** creates the `Online Retail` parent domain + 3 subdomains (each with a business charter, auto-populated by the governed tags applied in Step 4) and generates the **Genie Ontology Pages** bulk-import file — a 30-term business glossary + one Page per governed table. Import it via **Discover ▸ Pages ▸ Genie Code ▸ Bulk import pages** and Publish.
 
 > **Note on Pages:** Discover Pages are Beta and have no public create API, so the setup generates a deterministic bulk-import document from the governed metadata rather than calling an endpoint. See [Deployment Step 6](#step-6--create-discover-domains--genie-ontology-pages).
 
@@ -542,7 +544,7 @@ databricks bundle run nexus_retail_domains -t dev
 Runs `setup/03_domains_setup.py` on serverless. It:
 - Registers the governed tags backing the domains (idempotent).
 - Creates the **`Online Retail` parent domain** + **3 subdomains** (Sales Performance, Customer Analytics, Returns & Quality) via the Discover Domains API. Tables tagged in Step 4 automatically appear under the matching domain.
-- Reads the governed domain tags + table comments that Step 4 saved to Unity Catalog and generates a **Pages bulk-import file** (`/Volumes/<catalog>/online_retail_metrics/discover_ontology/nexus_retail_pages.md`) — 15 curated concept Pages (Gross Revenue, CLV, Return Rate, Faulty Batch, …) + one Page per governed table, grouped by domain.
+- Reads the governed domain tags + table comments that Step 4 saved to Unity Catalog and generates a **Pages bulk-import file** (`/Volumes/<catalog>/online_retail_metrics/discover_ontology/nexus_retail_pages.md`) — a **30-term business glossary** grouped by subdomain (each term with definition · calculation · where-it-lives · benchmarks · the questions it answers), plus one auto-generated Page per governed table.
 
 Then, in the workspace: **Discover ▸ Pages ▸ Create page ▸ Genie Code ▸ Bulk import pages**, attach the generated file, review the drafts, and **Publish**. Published Pages become authoritative context that Genie One prioritizes and cites.
 
