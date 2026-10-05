@@ -35,7 +35,7 @@ export default function Orders() {
 
   // Debounce free-text search; reset paging whenever the result set changes.
   useEffect(() => { const t = setTimeout(() => setSearch(text.trim()), 350); return () => clearTimeout(t); }, [text]);
-  useEffect(() => setPage(0), [filters, status, search]);
+  useEffect(() => { setPage(0); }, [filters, status, search]);
 
   const { data: opts } = useQuery({ queryKey: ["filters"], queryFn: api.filters, staleTime: Infinity });
   const q = useQuery({

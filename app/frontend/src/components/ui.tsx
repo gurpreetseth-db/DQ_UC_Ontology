@@ -164,7 +164,8 @@ export function Drawer({ open, onClose, title, children }: {
 }) {
   if (!open) return null;
   return (
-    <div className="fixed inset-0 z-40 flex justify-end bg-navy/30" onClick={onClose}>
+    // Offset by the Genie panel width (--genie-w) so the drawer opens beside it, not over it.
+    <div className="fixed inset-y-0 left-0 z-40 flex justify-end bg-navy/30" style={{ right: "var(--genie-w, 0px)" }} onClick={onClose}>
       <div className="h-full w-full max-w-5xl overflow-y-auto bg-oat shadow-2xl" onClick={(e) => e.stopPropagation()}>
         <div className="sticky top-0 z-10 flex items-center justify-between border-b border-oat-300 bg-white px-5 py-3">
           <h2 className="text-lg font-semibold">{title}</h2>

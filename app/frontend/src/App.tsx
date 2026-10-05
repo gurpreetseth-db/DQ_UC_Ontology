@@ -1,15 +1,17 @@
+import { useEffect } from "react";
 import { NavLink, Navigate, Route, Routes, useLocation } from "react-router-dom";
 import { useQuery } from "@tanstack/react-query";
 import clsx from "clsx";
 import { BarChart3, LayoutDashboard, Package, ShoppingCart, Sparkles, UserSearch } from "lucide-react";
 import { api } from "./api";
 import { FilterProvider } from "./filters";
+import { GenieProvider, useGenie } from "./genie";
+import { GenieLauncher, GeniePanel } from "./components/GeniePanel";
 import Overview from "./pages/Overview";
 import Orders from "./pages/Orders";
 import Customers from "./pages/Customers";
 import Products from "./pages/Products";
 import Sales from "./pages/Sales";
-import Genie from "./pages/Genie";
 
 const NAV = [
   { to: "/", label: "Overview", icon: LayoutDashboard },
@@ -17,13 +19,28 @@ const NAV = [
   { to: "/orders", label: "Orders", icon: ShoppingCart },
   { to: "/products", label: "Products", icon: Package },
   { to: "/sales", label: "Sales & revenue", icon: BarChart3 },
-  { to: "/genie", label: "Ask Genie", icon: Sparkles },
 ];
 
 // Global filters (region/category/dates) are carried across the filter-aware pages.
 const FILTER_KEYS = ["region", "super_region", "category", "channel", "start_date", "end_date"];
 
 export default function App() {
+  return (
+    <GenieProvider>
+      <Shell />
+    </GenieProvider>
+  );
+}
+
+// Old /genie bookmarks: open the docked panel and land on Overview.
+function OpenGenie() {
+  const { setOpen } = useGenie();
+  useEffect(() => { setOpen(true); }, []); // eslint-disable-line react-hooks/exhaustive-deps
+  return <Navigate to="/" replace />;
+}
+
+function Shell() {
+  const genie = useGenie();
   const { search } = useLocation();
   const me = useQuery({ queryKey: ["whoami"], queryFn: api.whoami, staleTime: Infinity });
   const carried = new URLSearchParams([...new URLSearchParams(search)].filter(([k]) => FILTER_KEYS.includes(k))).toString();
@@ -43,6 +60,11 @@ export default function App() {
               <Icon size={16} /> {label}
             </NavLink>
           ))}
+          <button onClick={() => genie.setOpen(!genie.open)}
+            className={clsx("mt-2 flex items-center gap-2.5 rounded-md px-3 py-2 text-left text-sm transition",
+              genie.open ? "bg-lava/90 font-medium text-white" : "text-oat/70 hover:bg-white/5 hover:text-white")}>
+            <Sparkles size={16} /> {genie.open ? "Hide Genie" : "Ask Genie"}
+          </button>
         </nav>
         <div className="border-t border-white/10 px-5 py-3 text-xs text-oat/60">
           <div className="truncate">{me.data?.email ?? "…"}</div>
@@ -57,11 +79,13 @@ export default function App() {
             <Route path="/orders" element={<Orders />} />
             <Route path="/products" element={<Products />} />
             <Route path="/sales" element={<Sales />} />
-            <Route path="/genie" element={<Genie />} />
+            <Route path="/genie" element={<OpenGenie />} />
             <Route path="*" element={<Navigate to="/" replace />} />
           </Routes>
         </FilterProvider>
       </main>
+      <GeniePanel />
+      <GenieLauncher />
     </div>
   );
 }
