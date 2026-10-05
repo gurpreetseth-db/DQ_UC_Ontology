@@ -226,3 +226,36 @@ ALTER TABLE online_retail_gold.gold_daily_revenue
   ALTER COLUMN new_customers       COMMENT 'Customers placing their first ever order on this date.';
 ALTER TABLE online_retail_gold.gold_daily_revenue
   ALTER COLUMN returning_customers COMMENT 'Customers who have ordered before this date.';
+
+ALTER TABLE online_retail_gold.gold_order_details
+  SET TAGS (
+    'quality_tier' = 'gold', 'domain' = 'transaction',
+    'data_product' = 'nexus_retail', 'owner' = 'analytics',
+    'grain' = 'order_id', 'consumer' = 'support_console'
+  );
+ALTER TABLE online_retail_gold.gold_order_details
+  ALTER COLUMN order_status    COMMENT 'Order lifecycle status: pending | confirmed | shipped | delivered | cancelled.';
+ALTER TABLE online_retail_gold.gold_order_details
+  ALTER COLUMN invoice_overdue COMMENT 'TRUE when the invoice is past due_date and unpaid. NULL when no invoice was issued.';
+ALTER TABLE online_retail_gold.gold_order_details
+  ALTER COLUMN has_return      COMMENT 'TRUE when a return was raised against this order (at most one per order).';
+
+ALTER TABLE online_retail_gold.gold_order_lines
+  SET TAGS (
+    'quality_tier' = 'gold', 'domain' = 'transaction',
+    'data_product' = 'nexus_retail', 'owner' = 'analytics',
+    'grain' = 'line_id', 'consumer' = 'support_console'
+  );
+ALTER TABLE online_retail_gold.gold_order_lines
+  ALTER COLUMN line_total COMMENT 'Line value as captured at order time (quantity × unit_price, pre-discount).';
+
+ALTER TABLE online_retail_gold.gold_product_catalog
+  SET TAGS (
+    'quality_tier' = 'gold', 'domain' = 'product',
+    'data_product' = 'nexus_retail', 'owner' = 'analytics',
+    'grain' = 'product_id', 'consumer' = 'support_console'
+  );
+ALTER TABLE online_retail_gold.gold_product_catalog
+  ALTER COLUMN return_rate_pct COMMENT 'Lifetime returns / orders containing the product (delivered+shipped). NULL if never sold.';
+ALTER TABLE online_retail_gold.gold_product_catalog
+  ALTER COLUMN faulty_batch    COMMENT 'TRUE for the 8 FAULT-* SKUs from the defective batch.';

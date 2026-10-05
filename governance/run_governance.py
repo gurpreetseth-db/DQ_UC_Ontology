@@ -689,6 +689,27 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
                  "grain": "date_channel_region", "data_product": "nexus_retail"},
     },
+    f"`{C}`.online_retail_gold.gold_order_details": {
+        "comment":
+            "Order-level detail for the Support Console: status, delivery ETA, invoice status/overdue, "
+            "and return/refund outcome. No PII — customer_id only. Grain: order_id.",
+        "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
+                 "grain": "order_id", "data_product": "nexus_retail", "consumer": "support_console"},
+    },
+    f"`{C}`.online_retail_gold.gold_order_lines": {
+        "comment":
+            "Order line items with product name, SKU, category and faulty-batch flag. "
+            "Used by the Support Console to show order contents. Grain: line_id.",
+        "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
+                 "grain": "line_id", "data_product": "nexus_retail", "consumer": "support_console"},
+    },
+    f"`{C}`.online_retail_gold.gold_product_catalog": {
+        "comment":
+            "Full product catalog (incl. never-returned products) with lifetime units sold, revenue, "
+            "returns and return_rate_pct. Grain: product_id.",
+        "tags": {"quality_tier": "gold", "domain": "product", "owner": "analytics",
+                 "grain": "product_id", "data_product": "nexus_retail", "consumer": "support_console"},
+    },
 
     # ── METRICS ──────────────────────────────────────────────────────────────
     f"`{C}`.online_retail_metrics.mv_category_revenue": {
@@ -830,6 +851,9 @@ GOLD_GENIE_DOMAIN = {
     "gold_customer_lifetime_value": "customer_analytics",
     "gold_regional_performance":    "returns_quality",
     "gold_return_analysis":         "returns_quality",
+    "gold_order_details":           "sales_performance",
+    "gold_order_lines":             "sales_performance",
+    "gold_product_catalog":         "returns_quality",
 }
 
 def _subdomain_tag_for(full_name: str, meta: dict):
