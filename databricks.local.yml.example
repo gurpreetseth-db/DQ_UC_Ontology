@@ -16,6 +16,7 @@ targets:
       catalog:      your_catalog_name      # must already exist in your workspace
       warehouse_id: your_warehouse_id      # SQL Warehouses → <name> → Connection Details
       owner_user:   your.email@company.com # user who gets unmasked PII access
+      genie_space_id: your_genie_space_id   # NexusRetail Analytics space (from nexus_retail_genie_setup)
 
   prod:
     workspace:

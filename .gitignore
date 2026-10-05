@@ -22,3 +22,10 @@ __pycache__/
 # ── Secrets / env ────────────────────────────────────────────────────────────
 .env
 *.env.local
+
+# ── Support Console app ──────────────────────────────────────────────────────
+# node_modules is never synced. frontend/dist is a build artifact: it's kept out
+# of git but force-included in the bundle sync (see `sync.include` in databricks.yml).
+app/frontend/node_modules/
+app/frontend/dist/
+*.tsbuildinfo

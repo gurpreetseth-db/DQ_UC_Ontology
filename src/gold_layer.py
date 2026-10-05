@@ -440,3 +440,173 @@ def gold_daily_revenue():
             CAST(o.order_date AS DATE), o.channel,
             o.region_id, o.region_name, o.super_region
     """)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 7. ORDER DETAILS  (one row per order — support console order lookup)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dp.materialized_view(
+    name=f"`{CATALOG}`.online_retail_gold.gold_order_details",
+    comment="Order-level detail for customer support: order status, delivery ETA, "
+            "invoice status/overdue, and return/refund outcome. "
+            "No PII — customers are identified by customer_id only. "
+            "Invoices and returns are at most 1 per order, so LEFT JOINs keep the grain. "
+            "Grain: order_id.",
+    table_properties={
+        "quality": "gold",
+        "domain": "transaction",
+        "data_product": "nexus_retail",
+        "owner": "analytics",
+        "delta.enableRowTracking": "true",
+    },
+    cluster_by=["customer_id", "order_date"],
+)
+def gold_order_details():
+    return spark.sql(f"""
+        SELECT
+            o.order_id,
+            o.customer_id,
+            CAST(o.order_date AS DATE)                 AS order_date,
+            o.order_date                               AS order_ts,
+            CAST(o.estimated_delivery AS DATE)         AS estimated_delivery,
+            o.channel,
+            o.status                                   AS order_status,
+            o.region_id,
+            o.region_name,
+            o.super_region,
+            o.country_code,
+            o.loyalty_tier,
+            o.item_count,
+            ROUND(o.order_total, 2)                    AS order_total,
+            i.invoice_number,
+            i.invoice_status,
+            i.issue_date                               AS invoice_date,
+            i.due_date                                 AS invoice_due_date,
+            ROUND(i.invoice_total, 2)                  AS invoice_total,
+            i.is_overdue                               AS invoice_overdue,
+            r.return_id,
+            r.return_date,
+            r.return_reason_code,
+            r.return_category,
+            r.return_status,
+            ROUND(r.refund_amount, 2)                  AS refund_amount,
+            r.faulty_batch_involved,
+            r.return_id IS NOT NULL                    AS has_return
+        FROM {SLV}.silver_fact_orders         o
+        LEFT JOIN {SLV}.silver_fact_invoices  i ON o.order_id = i.order_id
+        LEFT JOIN {SLV}.silver_fact_returns   r ON o.order_id = r.order_id
+    """)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 8. ORDER LINES  (one row per order line — "what was in my order?")
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dp.materialized_view(
+    name=f"`{CATALOG}`.online_retail_gold.gold_order_lines",
+    comment="Order line items enriched with product name, SKU, category and faulty-batch flag. "
+            "Used by the support console to show the contents of an order. "
+            "Grain: line_id.",
+    table_properties={
+        "quality": "gold",
+        "domain": "transaction",
+        "data_product": "nexus_retail",
+        "owner": "analytics",
+        "delta.enableRowTracking": "true",
+    },
+    cluster_by=["order_id"],
+)
+def gold_order_lines():
+    return spark.sql(f"""
+        SELECT
+            oi.line_id,
+            oi.order_id,
+            o.customer_id,
+            CAST(o.order_date AS DATE)                 AS order_date,
+            oi.product_id,
+            p.sku,
+            p.product_name,
+            p.brand,
+            p.category_name,
+            p.subcategory_name,
+            p.faulty_batch,
+            oi.quantity,
+            ROUND(oi.unit_price, 2)                    AS unit_price,
+            oi.discount_pct,
+            ROUND(oi.line_total, 2)                    AS line_total
+        FROM `{CATALOG}`.online_retail_bronze.bronze_order_items oi
+        JOIN {SLV}.silver_fact_orders          o ON oi.order_id   = o.order_id
+        LEFT JOIN {SLV}.silver_dim_products    p ON oi.product_id = p.product_id
+    """)
+
+# ─────────────────────────────────────────────────────────────────────────────
+# 9. PRODUCT CATALOG  (one row per product — catalog + sales + returns)
+# ─────────────────────────────────────────────────────────────────────────────
+
+@dp.materialized_view(
+    name=f"`{CATALOG}`.online_retail_gold.gold_product_catalog",
+    comment="Full product catalog with lifetime sales and return stats. "
+            "Unlike gold_return_analysis, includes products that were never returned. "
+            "Sales count delivered/shipped orders only (consistent with gold_return_analysis). "
+            "Grain: product_id.",
+    table_properties={
+        "quality": "gold",
+        "domain": "product",
+        "data_product": "nexus_retail",
+        "owner": "analytics",
+        "delta.enableRowTracking": "true",
+    },
+    cluster_by_auto=True,
+)
+def gold_product_catalog():
+    return spark.sql(f"""
+        WITH sales AS (
+            SELECT
+                oi.product_id,
+                COUNT(DISTINCT oi.order_id)            AS orders_with_product,
+                SUM(oi.quantity)                       AS units_sold,
+                ROUND(SUM(oi.line_total), 2)           AS gross_revenue,
+                CAST(MAX(o.order_date) AS DATE)        AS last_sold_date
+            FROM `{CATALOG}`.online_retail_bronze.bronze_order_items oi
+            JOIN {SLV}.silver_fact_orders o ON oi.order_id = o.order_id
+            WHERE o.status IN ('delivered','shipped')
+            GROUP BY oi.product_id
+        ),
+        rets AS (
+            SELECT
+                ri.product_id,
+                COUNT(DISTINCT r.return_id)            AS return_count,
+                SUM(ri.quantity)                       AS units_returned,
+                ROUND(SUM(COALESCE(r.refund_amount, 0)), 2) AS refund_total
+            FROM {SLV}.silver_fact_returns r
+            JOIN `{CATALOG}`.online_retail_bronze.bronze_return_items ri ON r.return_id = ri.return_id
+            GROUP BY ri.product_id
+        )
+        SELECT
+            p.product_id,
+            p.sku,
+            p.product_name,
+            p.brand,
+            p.category_id,
+            p.category_name,
+            p.subcategory_id,
+            p.subcategory_name,
+            ROUND(p.current_price, 2)                  AS current_price,
+            ROUND(p.base_price, 2)                     AS base_price,
+            p.weight_kg,
+            p.faulty_batch,
+            p.is_active,
+            COALESCE(s.orders_with_product, 0)         AS orders_with_product,
+            COALESCE(s.units_sold, 0)                  AS units_sold,
+            COALESCE(s.gross_revenue, 0)               AS gross_revenue,
+            s.last_sold_date,
+            COALESCE(r.return_count, 0)                AS return_count,
+            COALESCE(r.units_returned, 0)              AS units_returned,
+            COALESCE(r.refund_total, 0)                AS refund_total,
+            ROUND(
+                100.0 * COALESCE(r.return_count, 0)
+                / NULLIF(s.orders_with_product, 0), 2
+            )                                          AS return_rate_pct
+        FROM {SLV}.silver_dim_products p
+        LEFT JOIN sales s ON p.product_id = s.product_id
+        LEFT JOIN rets  r ON p.product_id = r.product_id
+    """)

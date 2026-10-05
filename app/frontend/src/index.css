@@ -1,0 +1,18 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer components {
+  .input {
+    @apply h-9 rounded-md border border-oat-300 bg-white px-2.5 text-sm text-navy outline-none
+           focus:border-lava focus:ring-2 focus:ring-lava/20;
+  }
+  .btn {
+    @apply inline-flex h-9 items-center gap-1.5 rounded-md px-3 text-sm font-medium transition
+           disabled:cursor-not-allowed disabled:opacity-50;
+  }
+  .btn-primary { @apply btn bg-lava text-white hover:bg-lava-700; }
+  .btn-ghost { @apply btn text-navy-500 hover:bg-oat-200 hover:text-navy; }
+  .th { @apply whitespace-nowrap px-3 py-2 text-left text-xs font-semibold uppercase tracking-wide text-navy-500; }
+  .td { @apply whitespace-nowrap px-3 py-2 text-sm; }
+}

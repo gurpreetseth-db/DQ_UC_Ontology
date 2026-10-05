@@ -5,15 +5,18 @@
 > a **Discover ontology (domains + a 30-term business glossary)** that makes **Genie One**
 > answer business questions in plain English — and cite where the answer came from.
 
-**Deployable to any workspace** — no hardcoded URLs/IDs. Configure `databricks.local.yml` once, run 6 steps.
+**Deployable to any workspace** — no hardcoded URLs/IDs. Configure `databricks.local.yml` once, run 7 steps.
 
 ```mermaid
 flowchart LR
     RAW["📁 Raw<br/>20 Parquet tables<br/>UC Volume"] --> BRZ["🥉 Bronze<br/>18 streaming tables<br/>Auto Loader"]
     BRZ --> SLV["🥈 Silver<br/>8 datasets<br/>DQX + PII masks"]
-    SLV --> GLD["🥇 Gold<br/>6 materialized views"]
+    SLV --> GLD["🥇 Gold<br/>9 materialized views"]
     GLD --> MET["📐 Metrics<br/>3 metric views + 3 MVs<br/>semantic layer"]
     MET --> GEN["🧠 Genie One<br/>NL analytics"]
+    GLD --> APP["🎧 Support Console<br/>Databricks App"]
+    MET --> APP
+    GEN -. "Ask Genie" .-> APP
     ONT["📖 Discover Ontology<br/>4 domains · 30-term glossary"] -. "authoritative context" .-> GEN
     MET -. "backs" .-> ONT
 
@@ -24,6 +27,7 @@ flowchart LR
     classDef metrics fill:#D2E3FC,stroke:#1565C0,color:#111
     classDef genie fill:#E1D5F5,stroke:#6A1B9A,color:#111
     classDef onto fill:#CDEBD3,stroke:#1B5E20,color:#111
+    classDef app fill:#FFD9D3,stroke:#FF3621,color:#111
     class RAW raw
     class BRZ bronze
     class SLV silver
@@ -31,16 +35,18 @@ flowchart LR
     class MET metrics
     class GEN genie
     class ONT onto
+    class APP app
 ```
 
 | Layer | What you get |
 |---|---|
-| **Pipeline** | Lakeflow SDP — 18 bronze streaming tables → 8 silver datasets → 6 gold MVs (32 Delta tables) |
+| **Pipeline** | Lakeflow SDP — 18 bronze streaming tables → 8 silver datasets → 9 gold MVs (35 Delta tables) |
 | **Data quality** | Native SDP expectations + rule-driven `databricks-labs-dqx` **per-entity quarantine** tables (`<source_table>_quarantine`) rolled up into one view (139 records caught) |
-| **Governance** | UC column masks (PII), tags, table/column comments, grants — on all 32 tables |
+| **Governance** | UC column masks (PII), tags, table/column comments, grants — on all 35 tables |
 | **Semantic layer** | 3 governed metric views (`WITH METRICS LANGUAGE YAML`) + 3 UC materialized views |
 | **Ontology** | `Online Retail` domain + 3 subdomains + a **30-term business glossary** for Genie |
 | **Genie One** | NL space wired to the metric views, with knowledge snippets + verified example SQL |
+| **Support Console** | FastAPI + React Databricks App for support staff — order/customer/product lookup, sales by region & category, embedded Genie chat |
 
 ---
 
@@ -139,7 +145,7 @@ erDiagram
 ## Pipeline & Semantic Layer
 
 <details>
-<summary><b>Bronze → Silver → Gold (32 Delta tables)</b></summary>
+<summary><b>Bronze → Silver → Gold (35 Delta tables)</b></summary>
 
 **Bronze** (`online_retail_bronze`) — 18 Auto Loader streaming tables; PK `@dp.expect_or_fail`; Liquid Clustering. `bronze_products` sets the `faulty_batch` flag + `FAULT-PHON-*` SKUs at ingest.
 
@@ -157,8 +163,8 @@ erDiagram
 | `silver_fact_invoices` | ST | **~52 NULL-total rows dropped** |
 | `silver_fact_returns` | ST | Product + `faulty_batch` enrichment |
 
-**Gold** (`online_retail_gold`) — 6 materialized views (`CLUSTER BY AUTO`):
-`gold_category_sales` · `gold_customer_segment_sales` · `gold_regional_performance` · `gold_customer_lifetime_value` · `gold_return_analysis` · `gold_daily_revenue`.
+**Gold** (`online_retail_gold`) — 9 materialized views:
+`gold_category_sales` · `gold_customer_segment_sales` · `gold_regional_performance` · `gold_customer_lifetime_value` · `gold_return_analysis` · `gold_daily_revenue` — plus 3 order/product-grain views for the [Support Console](#support-console-databricks-app): `gold_order_details` · `gold_order_lines` · `gold_product_catalog`.
 
 </details>
 
@@ -191,7 +197,7 @@ Measures use `MEASURE()`; stored columns (Net Revenue, Units Sold, Cancellation 
 
 ---
 
-## Deploy in 6 steps
+## Deploy in 7 steps
 
 **Step 0 — configure** (no hardcoded values; `databricks.local.yml` is gitignored):
 
@@ -202,12 +208,13 @@ cp databricks.local.yml.example databricks.local.yml
 
 | # | Command | Creates | ~Time |
 |---|---|---|---|
-| 1 | `databricks bundle deploy -t dev` | pipeline + 5 jobs, uploads notebooks | ~1 min |
+| 1 | `databricks bundle deploy -t dev` | pipeline + 5 jobs + app, uploads notebooks | ~1 min |
 | 2 | `databricks bundle run nexus_retail_generate_data -t dev` | 20 raw Parquet tables (~15K rows) | ~20 min |
-| 3 | `databricks bundle run nexus_retail_pipeline -t dev` | 32 Delta tables + 139-record quarantine | ~3 min |
+| 3 | `databricks bundle run nexus_retail_pipeline -t dev` | 35 Delta tables + 139-record quarantine | ~3 min |
 | 4 | `databricks bundle run nexus_retail_governance -t dev` | masks, tags, comments, metric views, **domain tags** | ~2 min |
 | 5 | `databricks bundle run nexus_retail_genie_setup -t dev` | Genie space + snippets + example SQL | ~1 min |
 | 6 | `databricks bundle run nexus_retail_domains -t dev` | domains + **glossary Pages** bulk-import file | ~1 min |
+| 7 | `(cd app/frontend && npm install && npm run build)` then `databricks bundle deploy -t dev && databricks bundle run nexus_retail_support_app -t dev` | **Support Console** Databricks App (needs `genie_space_id` from Step 5 in `databricks.local.yml`) | ~4 min |
 
 **After Step 6:** open **Discover ▸ Pages ▸ Create page ▸ Genie Code ▸ Bulk import pages**, attach the generated `nexus_retail_pages.md`, review, and **Publish** — published Pages become authoritative context Genie prioritises and cites.
 
@@ -232,9 +239,36 @@ cp databricks.local.yml.example databricks.local.yml
 | Governance tags fail `INVALID_PARAMETER_VALUE` | tag key not pre-registered — apply via Catalog Explorer → Tags |
 | Column comment fails on gold/metrics | expected — `ALTER COLUMN` unsupported on MVs; script skips them |
 | Domain create `RESOURCE_EXHAUSTED` (300 cap) | free domain slots or raise account limit, then re-run Step 6 |
+| `variable 'genie_space_id' is required` | add `genie_space_id` (from Step 5 — Genie space URL after `/rooms/`) to `databricks.local.yml` |
+| App loads but shows a blank page | the SPA wasn't built — `(cd app/frontend && npm run build)`, then deploy + `bundle run nexus_retail_support_app` |
+| App page shows `PERMISSION_DENIED` / table not found | a table the app reads is missing from the app's `uc_securable` resources, or the pipeline hasn't created the 3 Support Console gold views yet (re-run Step 3) |
+| Genie chat errors in the app | the app's service principal needs `CAN_RUN` on the space (bundle resource) **and** `SELECT` on every table in the space — add new space tables to the app resources |
 | Pages have no "create" API | use the generated bulk-import file (Discover ▸ Pages ▸ Genie Code) |
 
 </details>
+
+---
+
+## Support Console (Databricks App)
+
+A FastAPI + React app in `app/` for customer-support staff. It reads **only** `online_retail_gold` and `online_retail_metrics`, and embeds the Genie space for natural-language questions.
+
+| Page | What staff do | Source |
+|---|---|---|
+| Overview | Order KPIs (revenue, AOV, open orders, overdue invoices, return/cancel rate), monthly revenue, status mix | `gold_order_details` |
+| Customer lookup | Search by customer ID → CLV profile + full order history → order drawer | `gold_customer_lifetime_value`, `gold_order_details`, `gold_order_lines` |
+| Orders | Search by order / customer / invoice #, filter by status; drawer with invoice, return and line items | `gold_order_details`, `gold_order_lines` |
+| Products | Catalog search, faulty-batch filter, monthly units, return reasons | `gold_product_catalog`, `gold_return_analysis`, `gold_order_lines` |
+| Sales & revenue | Revenue by category, region, channel × month; category × region heat table; CSV export | `mv_category_revenue`, `mv_regional_orders`, `metrics_sales_kpis` (`MEASURE()`) |
+| Ask Genie | Chat with the NexusRetail Analytics space; shows answer, result table and generated SQL; keeps follow-up context | Genie Conversation API |
+
+A global filter bar (super region, region, category, channel, **single month or from/to dates**) is stored in the URL, so a filtered view can be shared.
+
+- **Gold views added for the app:** `gold_order_details` (grain: order), `gold_order_lines` (grain: order line) and `gold_product_catalog` (grain: product, including never-returned products). No PII; customers appear by `customer_id` only.
+- **Bundle variables:** `genie_space_id` (required), `gold_schema`, `metrics_schema`, `app_name` (all have defaults).
+- **Permissions are declarative:** the app's `uc_securable` resources grant its service principal `SELECT` on the 15 tables it and the Genie space read, plus `CAN_USE` on the warehouse and `CAN_RUN` on the space. No manual GRANTs are needed.
+- **Known data issue:** 22 of 120 returns are dated before their order (synthetic source data), giving negative *days to return*; the Products page flags these as a data issue rather than hiding them.
+- **Local dev:** `cd app && DATABRICKS_WAREHOUSE_ID=<id> GENIE_SPACE_ID=<id> uvicorn backend.main:app --port 8000`. It uses the `DATABRICKS_CONFIG_PROFILE` CLI profile (default `Myenv`). Run `npm run dev` in `app/frontend` for hot reload.
 
 ---
 
@@ -273,13 +307,13 @@ GROUP BY ALL ORDER BY repeat_rate DESC;
 
 ```
 DQ_UC_Ontology/
-├── databricks.yml                  # DAB bundle — pipeline + 5 jobs (no hardcoded values)
+├── databricks.yml                  # DAB bundle — pipeline + 5 jobs + Support Console app (no hardcoded values)
 ├── databricks.local.yml.example    # copy → databricks.local.yml, fill 3 values
 ├── dqx_rules/silver_rules.yaml      # DQX rule registry (rule-driven quarantine)
 ├── src/
 │   ├── bronze_layer.py             # 18 Auto Loader streaming tables
 │   ├── silver_layer.py             # DQ quarantine + 7 silver datasets (+ PII masks)
-│   └── gold_layer.py               # 6 gold materialized views
+│   └── gold_layer.py               # 9 gold materialized views (3 serve the Support Console)
 ├── governance/
 │   ├── run_governance.py           # ★ masks, tags, comments, metric views, domain tags
 │   └── *.sql                        # reference DDL (masks / tags / metric views)
@@ -287,6 +321,10 @@ DQ_UC_Ontology/
     ├── 01_generate_raw_data.py     # 20 Parquet tables via Spark + Faker
     ├── 02_genie_setup.py           # ★ Genie space, snippets, example SQL
     └── 03_domains_setup.py         # ★ Discover domains + 30-term glossary Pages file
+└── app/                            # ★ Support Console (Databricks App)
+    ├── requirements.txt
+    ├── backend/                    # FastAPI: main.py (routes) · queries.py (all SQL) · genie.py · db.py
+    └── frontend/                   # React + Vite + Recharts → dist/ (served by FastAPI)
 ```
 
 | Job | Notebook | Order |

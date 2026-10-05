@@ -6,6 +6,11 @@ bundle:
 include:
   - "databricks.local.yml"
 
+# The app's built SPA (app/frontend/dist) is gitignored but must be uploaded.
+sync:
+  include:
+    - app/frontend/dist/**
+
 # ── Variables ──────────────────────────────────────────────────────────────
 # Set in databricks.local.yml (gitignored). No defaults — bundle validate
 # will fail with a clear "required variable" message if the file is missing.
@@ -22,6 +27,22 @@ variables:
     description: "SQL warehouse ID used by governance and Genie setup. Find in SQL Warehouse → Connection Details."
   owner_user:
     description: "Email of the user who gets unmasked PII access (UC column mask owner)."
+
+  # ── Support Console app ──────────────────────────────────────────────────
+  # genie_space_id: ID of the "NexusRetail Analytics" space created by the
+  #                 nexus_retail_genie_setup job (Genie → space → URL segment
+  #                 after /rooms/). Required — set it in databricks.local.yml.
+  genie_space_id:
+    description: "Genie space the Support Console's Ask Genie page talks to."
+  gold_schema:
+    description: "Schema holding the gold materialized views the app reads."
+    default: online_retail_gold
+  metrics_schema:
+    description: "Schema holding the metric views / MVs the app and Genie read."
+    default: online_retail_metrics
+  app_name:
+    description: "Databricks App name (lowercase letters, digits, dashes)."
+    default: nexus-retail-support
 
 # ── Targets ────────────────────────────────────────────────────────────────
 # workspace.host and profile are set in databricks.local.yml, not here.
@@ -125,3 +146,73 @@ resources:
         - environment_key: serverless
           spec:
             client: "1"
+
+  # ── Support Console (Databricks App) ─────────────────────────────────────
+  # FastAPI + React app in ./app. Reads ONLY ${var.gold_schema} and
+  # ${var.metrics_schema}; proxies the Genie space for natural-language Q&A.
+  # Runtime config lives here (not app/app.yaml) so catalog/schema follow the
+  # bundle variables. Each uc_securable grants the app's service principal
+  # SELECT on one table (plus USE CATALOG / USE SCHEMA on its parents) — this
+  # covers the app's own queries AND the Genie space's tables, because Genie
+  # runs as the app's service principal.
+  # Build the SPA before deploying:  (cd app/frontend && npm run build)
+  apps:
+    nexus_retail_support_app:
+      name: ${var.app_name}
+      description: "NexusRetail Support Console — orders, customers, products, sales and Genie Q&A"
+      source_code_path: ./app
+      config:
+        command: ["uvicorn", "backend.main:app", "--host", "0.0.0.0", "--port", "8000"]
+        env:
+          - name: CATALOG
+            value: ${var.catalog}
+          - name: GOLD_SCHEMA
+            value: ${var.gold_schema}
+          - name: METRICS_SCHEMA
+            value: ${var.metrics_schema}
+          - name: DATABRICKS_WAREHOUSE_ID
+            value_from: sql-warehouse
+          - name: GENIE_SPACE_ID
+            value_from: genie-space
+      resources:
+        - name: sql-warehouse
+          sql_warehouse:
+            id: ${var.warehouse_id}
+            permission: CAN_USE
+        - name: genie-space
+          genie_space:
+            name: "NexusRetail Analytics"
+            space_id: ${var.genie_space_id}
+            permission: CAN_RUN
+        # gold — app queries + Genie space tables
+        - name: gold-order-details
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_order_details" }
+        - name: gold-order-lines
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_order_lines" }
+        - name: gold-product-catalog
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_product_catalog" }
+        - name: gold-customer-lifetime-value
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_customer_lifetime_value" }
+        - name: gold-return-analysis
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_return_analysis" }
+        - name: gold-regional-performance
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_regional_performance" }
+        - name: gold-category-sales
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_category_sales" }
+        - name: gold-customer-segment-sales
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_customer_segment_sales" }
+        - name: gold-daily-revenue
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.gold_schema}.gold_daily_revenue" }
+        # metrics — certified semantic layer
+        - name: metrics-sales-kpis
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.metrics_schema}.metrics_sales_kpis" }
+        - name: metrics-customer-kpis
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.metrics_schema}.metrics_customer_kpis" }
+        - name: metrics-product-kpis
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.metrics_schema}.metrics_product_kpis" }
+        - name: mv-category-revenue
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.metrics_schema}.mv_category_revenue" }
+        - name: mv-customer-demo-sales
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.metrics_schema}.mv_customer_demo_sales" }
+        - name: mv-regional-orders
+          uc_securable: { securable_type: TABLE, permission: SELECT, securable_full_name: "${var.catalog}.${var.metrics_schema}.mv_regional_orders" }
