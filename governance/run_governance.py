@@ -68,6 +68,43 @@ def sql(label: str, stmt: str, allow_fail: bool = False) -> bool:
         return False
 
 
+def snapshot_grants(full_names: list[str]) -> dict[str, list[dict]]:
+    """Capture DIRECT grants on tables/views before they are re-created.
+
+    CREATE OR REPLACE VIEW drops a view's grants (e.g. the Support Console app's
+    service principal SELECT), so step 3 snapshots them and restore_grants()
+    re-applies them afterwards. Uses the UC permissions REST endpoint (direct
+    grants only — no inherited catalog/schema rows) via api_client so it works
+    across SDK versions. Objects that don't exist yet (first run) are skipped.
+    """
+    snap = {}
+    for fn in full_names:
+        name = fn.replace("`", "")
+        try:
+            resp = w.api_client.do("GET", f"/api/2.1/unity-catalog/permissions/table/{name}")
+            snap[name] = [a for a in resp.get("privilege_assignments", []) if a.get("privileges")]
+        except Exception as e:
+            print(f"  ·  no grants captured for {name.split('.')[-1]} ({str(e)[:80]})")
+    n = sum(len(v) for v in snap.values())
+    print(f"  ✓  snapshotted {n} principal grant(s) across {len(snap)} object(s)")
+    return snap
+
+
+def restore_grants(snap: dict[str, list[dict]]):
+    """Re-apply grants captured by snapshot_grants(). Re-granting is idempotent."""
+    for name, assignments in snap.items():
+        if not assignments:
+            continue
+        changes = [{"principal": a["principal"], "add": a["privileges"]} for a in assignments]
+        try:
+            w.api_client.do("PATCH", f"/api/2.1/unity-catalog/permissions/table/{name}",
+                            body={"changes": changes})
+            who = ", ".join(f"{a['principal']}:{'/'.join(a['privileges'])}" for a in assignments)
+            print(f"  ✓  restored grants on {name.split('.')[-1]}  ({who[:150]})")
+        except Exception as e:
+            print(f"  ✗  restore grants on {name.split('.')[-1]}  {str(e)[:150]}")
+
+
 def apply_tags(obj_type: str, full_name: str, tags: dict, allow_fail: bool = True):
     """Apply UC tags to a securable object."""
     tag_str = ",".join(f"'{k}'='{v}'" for k, v in tags.items())
@@ -922,6 +959,12 @@ ALTER TABLE `{C}`.online_retail_silver.silver_dim_customers
     # 3. Create metrics schema objects (UC MVs + Metric Views)
     #    Must run BEFORE table comments/tags — can't tag tables that don't exist yet.
     print("\n3. Creating online_retail_metrics objects...")
+    # CREATE OR REPLACE drops grants on views, so capture them first and
+    # restore once the objects are rebuilt (see restore_grants below).
+    metrics_objects = [f"`{C}`.online_retail_metrics.{n}" for n in (
+        "mv_category_revenue", "mv_customer_demo_sales", "mv_regional_orders",
+        "metrics_sales_kpis", "metrics_customer_kpis", "metrics_product_kpis")]
+    metrics_grants = snapshot_grants(metrics_objects)
 
     sql("mv_category_revenue", f"""
 CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_category_revenue
@@ -1110,6 +1153,9 @@ AS $$
       expr: AVG(return_rate_pct)
       comment: "Normal 4-8%%. FAULT-* shows >40%%. Alert threshold 25%%."
 $$""")
+
+    print("  restoring grants on re-created metrics objects...")
+    restore_grants(metrics_grants)
 
     # 4. Catalog comment + schema comments + schema tags
     print("\n4. Catalog, schema comments and schema tags...")

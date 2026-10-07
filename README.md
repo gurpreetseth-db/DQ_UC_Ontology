@@ -267,6 +267,7 @@ A global filter bar (super region, region, category, channel, **single month or 
 - **Gold views added for the app:** `gold_order_details` (grain: order), `gold_order_lines` (grain: order line) and `gold_product_catalog` (grain: product, including never-returned products). No PII; customers appear by `customer_id` only.
 - **Bundle variables:** `genie_space_id` (required), `gold_schema`, `metrics_schema`, `app_name` (all have defaults).
 - **Permissions are declarative:** the app's `uc_securable` resources grant its service principal `SELECT` on the 15 tables it and the Genie space read, plus `CAN_USE` on the warehouse and `CAN_RUN` on the space. No manual GRANTs are needed.
+- **Re-running governance keeps those grants:** step 3 rebuilds the `online_retail_metrics` objects with `CREATE OR REPLACE`, which drops view grants. `run_governance.py` snapshots the direct grants on all six objects first and re-applies them afterwards (look for `restored grants on …` in the job output).
 - **Known data issue:** 22 of 120 returns are dated before their order (synthetic source data), giving negative *days to return*; the Products page flags these as a data issue rather than hiding them.
 - **Local dev:** `cd app && DATABRICKS_WAREHOUSE_ID=<id> GENIE_SPACE_ID=<id> uvicorn backend.main:app --port 8000`. It uses the `DATABRICKS_CONFIG_PROFILE` CLI profile (default `Myenv`). Run `npm run dev` in `app/frontend` for hot reload.
 
