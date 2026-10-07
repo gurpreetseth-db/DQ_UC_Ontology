@@ -58,6 +58,9 @@ DATA_SOURCES = [
     f"{CATALOG}.online_retail_gold.gold_category_sales",
     f"{CATALOG}.online_retail_gold.gold_regional_performance",
     f"{CATALOG}.online_retail_gold.gold_customer_segment_sales",    
+    f"{CATALOG}.online_retail_gold.gold_order_details",
+    f"{CATALOG}.online_retail_gold.gold_order_lines",
+    f"{CATALOG}.online_retail_gold.gold_return_analysis"
 ]
 
 # =============================================================================
