@@ -23,6 +23,8 @@ import json
 w = WorkspaceClient()
 dbutils.widgets.text("catalog", "your_catalog_name")
 CATALOG = dbutils.widgets.get("catalog")
+GOLD_SCHEMA = dbutils.widgets.get("gold_schema")
+METRIC_SCHEMA = dbutils.widgets.get("metrics_schema")
 
 # =============================================================================
 # SECTION 1 — Create Genie Space (Online Retail)
@@ -46,21 +48,21 @@ cite the glossary definitions when answering.
 
 # Data sources for this Genie space (tables from gold + metrics schema)
 DATA_SOURCES = [
-    f"{CATALOG}.online_retail_metrics.mv_category_revenue",
-    f"{CATALOG}.online_retail_metrics.mv_customer_demo_sales",
-    f"{CATALOG}.online_retail_metrics.mv_regional_orders",
-    f"{CATALOG}.online_retail_metrics.metrics_sales_kpis",
-    f"{CATALOG}.online_retail_metrics.metrics_customer_kpis",
-    f"{CATALOG}.online_retail_metrics.metrics_product_kpis",
-    f"{CATALOG}.online_retail_gold.gold_daily_revenue",
-    f"{CATALOG}.online_retail_gold.gold_return_analysis",
-    f"{CATALOG}.online_retail_gold.gold_customer_lifetime_value",
-    f"{CATALOG}.online_retail_gold.gold_category_sales",
-    f"{CATALOG}.online_retail_gold.gold_regional_performance",
-    f"{CATALOG}.online_retail_gold.gold_customer_segment_sales",    
-    f"{CATALOG}.online_retail_gold.gold_order_details",
-    f"{CATALOG}.online_retail_gold.gold_order_lines",
-    f"{CATALOG}.online_retail_gold.gold_return_analysis"
+    f"{CATALOG}.{METRIC_SCHEMA}.mv_category_revenue",
+    f"{CATALOG}.{METRIC_SCHEMA}.mv_customer_demo_sales",
+    f"{CATALOG}.{METRIC_SCHEMA}.mv_regional_orders",
+    f"{CATALOG}.{METRIC_SCHEMA}.metrics_sales_kpis",
+    f"{CATALOG}.{METRIC_SCHEMA}.metrics_customer_kpis",
+    f"{CATALOG}.{METRIC_SCHEMA}.metrics_product_kpis",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_daily_revenue",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_return_analysis",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_customer_lifetime_value",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_category_sales",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_regional_performance",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_customer_segment_sales",    
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_order_details",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_order_lines",
+    f"{CATALOG}.{GOLD_SCHEMA}.gold_return_analysis"
 ]
 
 # =============================================================================
