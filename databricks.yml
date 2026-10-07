@@ -125,7 +125,7 @@ resources:
             base_parameters:
               catalog:      ${var.catalog}
               gold_schema:  ${var.gold_schema}
-              metric_schema: ${var.metrics_schema}
+              metrics_schema: ${var.metrics_schema}
               warehouse_id: ${var.warehouse_id}
           environment_key: serverless
       environments:
