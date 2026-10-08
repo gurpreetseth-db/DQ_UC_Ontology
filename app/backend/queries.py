@@ -246,7 +246,7 @@ def product_detail(product_id: str) -> dict[str, Any] | None:
 # ── Sales & revenue (semantic layer) ────────────────────────────────────────
 
 def sales(f: Filters) -> dict[str, Any]:
-    # Category × region × month — mv_category_revenue (online_retail_metrics)
+    # Category × region × month — mv_category_revenue (metrics schema)
     cw, cp = _where(f, {"region": "region_name", "super_region": "super_region",
                         "category": "category_name", "date": "sale_month"}, month_grain=True)
     by_category_sql = f"""

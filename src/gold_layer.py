@@ -1,7 +1,7 @@
 # Databricks notebook source
 # NexusRetail Analytics — Gold Layer
 # Pattern  : Materialized Views (batch aggregation from silver streaming tables)
-# Schema   : gurpreet_sethi.online_retail_gold
+# Schema   : <catalog>.<gold_schema> (bundle variable gold_schema, default online_retail_gold)
 # Notes    :
 #   - All gold MVs use CLUSTER BY AUTO for adaptive layout
 #   - delta.enableRowTracking on silver sources enables incremental MV refresh on serverless
@@ -11,6 +11,7 @@
 from pyspark import pipelines as dp
 
 CATALOG = spark.conf.get("catalog", "gurpreet_sethi")
+GOLD_SCHEMA = spark.conf.get("gold_schema", "online_retail_gold")
 SLV     = f"`{CATALOG}`.online_retail_silver"
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -18,7 +19,7 @@ SLV     = f"`{CATALOG}`.online_retail_silver"
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_category_sales",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_category_sales",
     comment="Category-level sales aggregation by subcategory, region, and month. "
             "Retains all dimension columns needed for dashboard slicing. "
             "Includes return_rate_pct to surface the faulty-batch Electronics anomaly. "
@@ -115,7 +116,7 @@ def gold_category_sales():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_customer_segment_sales",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_customer_segment_sales",
     comment="Customer segment sales: demographic slice × region × month. "
             "Key dimensions: age_bracket, income_bracket, loyalty_tier, acquisition_channel. "
             "Includes repeat_purchase_rate, avg_order_value per segment. "
@@ -194,7 +195,7 @@ def gold_customer_segment_sales():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_regional_performance",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_regional_performance",
     comment="Regional performance dashboard view: revenue, orders, returns, net revenue by region × country × month. "
             "APAC-East (REG-005) shows elevated return_rate_pct in Q4 2025 (faulty batch impact). "
             "Grain: region × country × month.",
@@ -249,7 +250,7 @@ def gold_regional_performance():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_customer_lifetime_value",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_customer_lifetime_value",
     comment="Customer-level CLV summary. One row per customer. "
             "Includes: total_revenue, order_frequency, avg_order_value, days_since_last_order, "
             "clv_segment (High/Medium/Low/Churned), return_rate. "
@@ -327,7 +328,7 @@ def gold_customer_lifetime_value():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_return_analysis",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_return_analysis",
     comment="Return analysis by product × reason × week. "
             "The faulty_batch=TRUE electronics products show return_rate_pct > 40% in Q4 2025. "
             "DQ anomaly detectable: return_count spikes for FAULT-* SKUs. "
@@ -397,7 +398,7 @@ def gold_return_analysis():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_daily_revenue",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_daily_revenue",
     comment="Daily revenue by channel and region. Backbone for AI/BI time-series dashboard. "
             "Includes new vs returning customer breakdown. "
             "Grain: sale_date × channel × region_id.",
@@ -446,7 +447,7 @@ def gold_daily_revenue():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_order_details",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_order_details",
     comment="Order-level detail for customer support: order status, delivery ETA, "
             "invoice status/overdue, and return/refund outcome. "
             "No PII — customers are identified by customer_id only. "
@@ -502,7 +503,7 @@ def gold_order_details():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_order_lines",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_order_lines",
     comment="Order line items enriched with product name, SKU, category and faulty-batch flag. "
             "Used by the support console to show the contents of an order. "
             "Grain: line_id.",
@@ -543,7 +544,7 @@ def gold_order_lines():
 # ─────────────────────────────────────────────────────────────────────────────
 
 @dp.materialized_view(
-    name=f"`{CATALOG}`.online_retail_gold.gold_product_catalog",
+    name=f"`{CATALOG}`.{GOLD_SCHEMA}.gold_product_catalog",
     comment="Full product catalog with lifetime sales and return stats. "
             "Unlike gold_return_analysis, includes products that were never returned. "
             "Sales count delivered/shipped orders only (consistent with gold_return_analysis). "

@@ -1,3 +1,6 @@
+-- REFERENCE ONLY: hardcodes the catalog and online_retail_* schema names. Not run by any job.
+-- The deployed path is governance/run_governance.py, which takes catalog / gold_schema /
+-- metrics_schema from the bundle variables. Edit names here before running by hand.
 -- =============================================================================
 -- NexusRetail Analytics — Column Masks & Row Filters
 -- Workspace : e2-demo-field-eng

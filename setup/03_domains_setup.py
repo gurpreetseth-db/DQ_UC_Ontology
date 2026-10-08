@@ -79,12 +79,16 @@ try:
     dbutils.widgets.text("catalog", "your_catalog_name")          # noqa: F821
     dbutils.widgets.text("warehouse_id", "your_warehouse_id")     # noqa: F821
     dbutils.widgets.text("owner_user", "your.email@company.com")  # noqa: F821
+    dbutils.widgets.text("gold_schema", "online_retail_gold")        # noqa: F821
+    dbutils.widgets.text("metrics_schema", "online_retail_metrics")  # noqa: F821
 except Exception:
     pass
 
 CATALOG      = _get("catalog")
 WAREHOUSE_ID = _get("warehouse_id")
 OWNER_USER   = _get("owner_user")
+GOLD_SCHEMA    = _get("gold_schema", "online_retail_gold")
+METRICS_SCHEMA = _get("metrics_schema", "online_retail_metrics")
 
 if any("your_" in v or "your." in v for v in [CATALOG, WAREHOUSE_ID, OWNER_USER]):
     raise ValueError(
@@ -119,7 +123,7 @@ PARENT_DOMAIN = {
         "and product quality. It answers questions such as: How is revenue "
         "trending by region and channel? Which customer segments drive lifetime "
         "value? Why did returns spike in Q4 2025? Certified semantic layer: the "
-        "online_retail_metrics metric views. Home of the Q4-2025 faulty-batch "
+        f"{METRICS_SCHEMA} metric views. Home of the Q4-2025 faulty-batch "
         "return story. Browse the subdomains for Sales Performance, Customer "
         "Analytics, and Returns and Quality."
     ),
@@ -842,13 +846,17 @@ print("\n3. Reading governed domain tags + table comments from Unity Catalog..."
 domain_tags = [PARENT_TAG] + [s["tag_key"] for s in SUBDOMAINS]
 tag_list_sql = ", ".join(f"'{t}'" for t in domain_tags)
 
+# Explicit schema list (not LIKE 'online_retail_%') so renamed gold/metrics schemas are found.
+schema_list_sql = ", ".join(f"'{s}'" for s in
+                            ("online_retail_bronze", "online_retail_silver", GOLD_SCHEMA, METRICS_SCHEMA))
+
 # table -> set(domain tags), from the governed tags run_governance.py applied
 membership = {}
 try:
     rows = run_sql(f"""
         SELECT schema_name, table_name, tag_name
         FROM {CATALOG}.information_schema.table_tags
-        WHERE schema_name LIKE 'online_retail_%' AND tag_name IN ({tag_list_sql})
+        WHERE schema_name IN ({schema_list_sql}) AND tag_name IN ({tag_list_sql})
     """)
     for schema, table, tag in rows:
         membership.setdefault(table, set()).add(tag)
@@ -863,7 +871,7 @@ try:
     rows = run_sql(f"""
         SELECT table_schema, table_name, comment
         FROM {CATALOG}.information_schema.tables
-        WHERE table_schema LIKE 'online_retail_%' AND comment IS NOT NULL
+        WHERE table_schema IN ({schema_list_sql}) AND comment IS NOT NULL
     """)
     for schema, table, comment in rows:
         # skip gold MV internal materialization aliases
@@ -890,9 +898,9 @@ def _fqn(short: str) -> str:
     prefix = short.split("_", 1)[0]  # bronze/silver/gold/mv/metrics
     schema = {
         "bronze": "online_retail_bronze", "silver": "online_retail_silver",
-        "gold": "online_retail_gold", "mv": "online_retail_metrics",
-        "metrics": "online_retail_metrics",
-    }.get(prefix, "online_retail_gold")
+        "gold": GOLD_SCHEMA, "mv": METRICS_SCHEMA,
+        "metrics": METRICS_SCHEMA,
+    }.get(prefix, GOLD_SCHEMA)
     return f"{CATALOG}.{schema}.{short}"
 
 
@@ -988,8 +996,8 @@ by_domain = {}
 # ingest and the per-entity *_quarantine MVs are plumbing rolled up by
 # silver_dq_quarantine, so neither earns a Page of its own.
 def _wants_table_page(table):
-    if schema_of.get(table) not in ("online_retail_silver", "online_retail_gold",
-                                    "online_retail_metrics"):
+    if schema_of.get(table) not in ("online_retail_silver", GOLD_SCHEMA,
+                                    METRICS_SCHEMA):
         return False
     return not table.endswith("_quarantine") or table == "silver_dq_quarantine"
 
@@ -1025,9 +1033,9 @@ print(f"  ✓  built {len(CURATED_PAGES)} concept (glossary) pages + {len(table_
 
 # ── 5. Write the artifact to a UC Volume (and print it) ───────────────────────
 print("\n5. Saving Pages file to a Unity Catalog Volume...")
-VOL_SCHEMA = f"{CATALOG}.online_retail_metrics"
+VOL_SCHEMA = f"{CATALOG}.{METRICS_SCHEMA}"
 VOL_NAME = "discover_ontology"
-VOL_PATH = f"/Volumes/{CATALOG}/online_retail_metrics/{VOL_NAME}"
+VOL_PATH = f"/Volumes/{CATALOG}/{METRICS_SCHEMA}/{VOL_NAME}"
 OUT_FILE = f"{VOL_PATH}/nexus_retail_pages.md"
 
 saved = False

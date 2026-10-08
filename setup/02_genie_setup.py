@@ -41,7 +41,7 @@ questions about sales performance, customer behaviour, and product returns.
 Data covers 24 months (Sep 2024 – Sep 2026), with a known Q3 2025 smartphone defect
 batch (FAULT-PHON-* SKUs) that caused a Q4 2025 return spike in APAC-East.
 
-This space is backed by the online_retail_metrics semantic layer and the published
+This space is backed by the {METRICS_SCHEMA} semantic layer and the published
 Discover Ontology Pages (a governed business glossary). Prefer the metric views and
 cite the glossary definitions when answering.
 """
@@ -81,8 +81,8 @@ APAC-East, APAC-South, MENA) and 65 countries. 173 products span 12 categories a
 All data lives in catalog: {CATALOG}.
 
 Key schemas:
-- online_retail_metrics: semantic layer — USE THESE for Genie queries (mv_*, metrics_*)
-- online_retail_gold: aggregated facts — use when metrics layer doesn't have what you need
+- {METRICS_SCHEMA}: semantic layer — USE THESE for Genie queries (mv_*, metrics_*)
+- {GOLD_SCHEMA}: aggregated facts — use when metrics layer doesn't have what you need
 - online_retail_silver: cleaned source data (not recommended for ad-hoc Genie queries)
 
 Table hierarchy:
@@ -323,7 +323,7 @@ EXAMPLE_QUESTION_SQLS = [
         "question": "Show gross revenue by region and quarter for 2025-2026",
         "sql": """
 SELECT `Sale Quarter`, `Region`, MEASURE(`Gross Revenue`) AS revenue
-FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_sales_kpis
 WHERE YEAR(`Sale Quarter`) IN (2025, 2026)
 GROUP BY ALL ORDER BY ALL
 """,
@@ -332,7 +332,7 @@ GROUP BY ALL ORDER BY ALL
         "question": "Which channel drives the highest average order value?",
         "sql": """
 SELECT `Channel`, MEASURE(`Avg Order Value`) AS avg_order_value
-FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_sales_kpis
 GROUP BY ALL ORDER BY avg_order_value DESC
 """,
     },
@@ -342,7 +342,7 @@ GROUP BY ALL ORDER BY avg_order_value DESC
 SELECT `Sale Quarter`,
        MEASURE(`New Customer Count`)       AS new_customers,
        MEASURE(`Returning Customer Count`) AS returning_customers
-FROM {CATALOG}.online_retail_metrics.metrics_sales_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_sales_kpis
 GROUP BY ALL ORDER BY ALL
 """,
     },
@@ -351,7 +351,7 @@ GROUP BY ALL ORDER BY ALL
         "sql": """
 -- metrics_sales_kpis has NO Category dimension; category revenue lives in mv_category_revenue
 SELECT category_name, sale_month, SUM(gross_revenue) AS revenue
-FROM {CATALOG}.online_retail_metrics.mv_category_revenue
+FROM {CATALOG}.{METRICS_SCHEMA}.mv_category_revenue
 WHERE YEAR(sale_month) = 2025
 GROUP BY ALL ORDER BY ALL
 """,
@@ -364,7 +364,7 @@ SELECT region_name,
        SUM(gross_revenue) AS gross_revenue,
        SUM(net_revenue)   AS net_revenue,
        SUM(refund_total)  AS refunds
-FROM {CATALOG}.online_retail_metrics.mv_regional_orders
+FROM {CATALOG}.{METRICS_SCHEMA}.mv_regional_orders
 WHERE sale_month >= DATE '2025-10-01' AND sale_month < DATE '2026-01-01'
 GROUP BY ALL ORDER BY net_revenue DESC
 """,
@@ -373,7 +373,7 @@ GROUP BY ALL ORDER BY net_revenue DESC
         "question": "What is the repeat purchase rate for Platinum vs Bronze loyalty tier?",
         "sql": """
 SELECT `Loyalty Tier`, MEASURE(`Repeat Purchase Rate`) AS repeat_rate
-FROM {CATALOG}.online_retail_metrics.metrics_customer_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_customer_kpis
 GROUP BY ALL ORDER BY repeat_rate DESC
 """,
     },
@@ -381,7 +381,7 @@ GROUP BY ALL ORDER BY repeat_rate DESC
         "question": "Show revenue by loyalty tier over time",
         "sql": """
 SELECT `Loyalty Tier`, `Month`, MEASURE(`Revenue`) AS revenue
-FROM {CATALOG}.online_retail_metrics.metrics_customer_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_customer_kpis
 GROUP BY ALL ORDER BY ALL
 """,
     },
@@ -391,7 +391,7 @@ GROUP BY ALL ORDER BY ALL
 SELECT clv_segment,
        COUNT(*)                     AS customers,
        ROUND(AVG(total_revenue), 2) AS avg_lifetime_revenue
-FROM {CATALOG}.online_retail_gold.gold_customer_lifetime_value
+FROM {CATALOG}.{GOLD_SCHEMA}.gold_customer_lifetime_value
 GROUP BY ALL ORDER BY customers DESC
 """,
     },
@@ -399,7 +399,7 @@ GROUP BY ALL ORDER BY customers DESC
         "question": "Show return rate by product category and faulty batch",
         "sql": """
 SELECT `Category`, `Faulty Batch`, MEASURE(`Return Rate`) AS return_rate
-FROM {CATALOG}.online_retail_metrics.metrics_product_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_product_kpis
 GROUP BY ALL ORDER BY return_rate DESC
 """,
     },
@@ -409,7 +409,7 @@ GROUP BY ALL ORDER BY return_rate DESC
 SELECT `Return Month`, `Faulty Batch`,
        MEASURE(`Return Rate`)  AS return_rate,
        MEASURE(`Return Count`) AS returns
-FROM {CATALOG}.online_retail_metrics.metrics_product_kpis
+FROM {CATALOG}.{METRICS_SCHEMA}.metrics_product_kpis
 WHERE `Category` = 'Electronics' AND `Return Month` >= DATE '2025-07-01'
 GROUP BY ALL ORDER BY `Return Month`
 """,
@@ -419,7 +419,7 @@ GROUP BY ALL ORDER BY `Return Month`
         "sql": """
 -- Cancellation Rate is a COLUMN: AVG(cancellation_rate_pct)
 SELECT region_name, ROUND(AVG(cancellation_rate_pct), 2) AS cancellation_rate_pct
-FROM {CATALOG}.online_retail_metrics.mv_regional_orders
+FROM {CATALOG}.{METRICS_SCHEMA}.mv_regional_orders
 GROUP BY ALL ORDER BY cancellation_rate_pct DESC
 """,
     },
@@ -447,9 +447,9 @@ PAGES = [
             "Show me the weekly revenue trend for APAC-East in Q3 and Q4 2025",
         ],
         "tables": [
-            f"{CATALOG}.online_retail_metrics.metrics_sales_kpis",
-            f"{CATALOG}.online_retail_metrics.mv_category_revenue",
-            f"{CATALOG}.online_retail_gold.gold_daily_revenue",
+            f"{CATALOG}.{METRIC_SCHEMA}.metrics_sales_kpis",
+            f"{CATALOG}.{METRIC_SCHEMA}.mv_category_revenue",
+            f"{CATALOG}.{GOLD_SCHEMA}.gold_daily_revenue",
         ],
     },
     {
@@ -464,9 +464,9 @@ PAGES = [
             "Which customer segment has the highest revenue per customer in APAC-East?",
         ],
         "tables": [
-            f"{CATALOG}.online_retail_metrics.metrics_customer_kpis",
-            f"{CATALOG}.online_retail_metrics.mv_customer_demo_sales",
-            f"{CATALOG}.online_retail_gold.gold_customer_lifetime_value",
+            f"{CATALOG}.{METRIC_SCHEMA}.metrics_customer_kpis",
+            f"{CATALOG}.{METRIC_SCHEMA}.mv_customer_demo_sales",
+            f"{CATALOG}.{GOLD_SCHEMA}.gold_customer_lifetime_value",
         ],
     },
     {
@@ -481,9 +481,9 @@ PAGES = [
             "Show me the data quality quarantine summary — how many records failed each rule?",
         ],
         "tables": [
-            f"{CATALOG}.online_retail_metrics.metrics_product_kpis",
-            f"{CATALOG}.online_retail_metrics.mv_regional_orders",
-            f"{CATALOG}.online_retail_gold.gold_return_analysis",
+            f"{CATALOG}.{METRIC_SCHEMA}.metrics_product_kpis",
+            f"{CATALOG}.{METRIC_SCHEMA}.mv_regional_orders",
+            f"{CATALOG}.{GOLD_SCHEMA}.gold_return_analysis",
         ],
     },
 ]
@@ -493,9 +493,13 @@ PAGES = [
 # body stays readable; substitute the real catalog here so nothing ships the
 # literal "{CATALOG}" token to Genie.
 for _snip in KNOWLEDGE_SNIPPETS:
-    _snip["content"] = _snip["content"].replace("{CATALOG}", CATALOG)
+    _snip["content"] = (_snip["content"].replace("{CATALOG}", CATALOG)
+                        .replace("{GOLD_SCHEMA}", GOLD_SCHEMA)
+                        .replace("{METRICS_SCHEMA}", METRIC_SCHEMA))
 for _ex in EXAMPLE_QUESTION_SQLS:
-    _ex["sql"] = _ex["sql"].replace("{CATALOG}", CATALOG)
+    _ex["sql"] = (_ex["sql"].replace("{CATALOG}", CATALOG)
+                  .replace("{GOLD_SCHEMA}", GOLD_SCHEMA)
+                  .replace("{METRICS_SCHEMA}", METRIC_SCHEMA))
 
 # COMMAND ----------
 
@@ -551,7 +555,7 @@ else:
         try:
             resp = w.api_client.do("POST", "/api/2.0/genie/spaces", body={
                 "title": SPACE_TITLE,
-                "description": SPACE_DESCRIPTION,
+                "description": SPACE_DESCRIPTION.replace("{METRICS_SCHEMA}", METRIC_SCHEMA),
                 "warehouse_id": warehouse_id,
                 "serialized_space": serialized,
             })

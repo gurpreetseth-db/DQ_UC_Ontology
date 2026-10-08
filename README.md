@@ -2,7 +2,7 @@
 
 > A full-stack Databricks demo on a synthetic global online-retail dataset: a governed
 > **medallion pipeline** → **Unity Catalog governance** → a **metric-view semantic layer** →
-> a **Discover ontology (domains + a 30-term business glossary)** that makes **Genie One**
+> a **Discover ontology (domains + a 27-term business glossary)** that makes **Genie One**
 > answer business questions in plain English — and cite where the answer came from.
 
 **Deployable to any workspace** — no hardcoded URLs/IDs. Configure `databricks.local.yml` once, run 7 steps.
@@ -17,7 +17,7 @@ flowchart LR
     GLD --> APP["🎧 Support Console<br/>Databricks App"]
     MET --> APP
     GEN -. "Ask Genie" .-> APP
-    ONT["📖 Discover Ontology<br/>4 domains · 30-term glossary"] -. "authoritative context" .-> GEN
+    ONT["📖 Discover Ontology<br/>4 domains · 27-term glossary"] -. "authoritative context" .-> GEN
     MET -. "backs" .-> ONT
 
     classDef raw fill:#ECEFF1,stroke:#607D8B,color:#111
@@ -42,9 +42,9 @@ flowchart LR
 |---|---|
 | **Pipeline** | Lakeflow SDP — 18 bronze streaming tables → 8 silver datasets → 9 gold MVs (35 Delta tables) |
 | **Data quality** | Native SDP expectations + rule-driven `databricks-labs-dqx` **per-entity quarantine** tables (`<source_table>_quarantine`) rolled up into one view (139 records caught) |
-| **Governance** | UC column masks (PII), tags, table/column comments, grants — on all 35 tables |
+| **Governance** | UC column masks (PII), tags, table/column comments, grants — on all 35 tables; gold + metrics objects **certified** (`system.certification_status`) |
 | **Semantic layer** | 3 governed metric views (`WITH METRICS LANGUAGE YAML`) + 3 UC materialized views |
-| **Ontology** | `Online Retail` domain + 3 subdomains + a **30-term business glossary** for Genie |
+| **Ontology** | `Online Retail` domain + 3 subdomains + a **27-term business glossary** for Genie |
 | **Genie One** | NL space wired to the metric views, with knowledge snippets + verified example SQL |
 | **Support Console** | FastAPI + React Databricks App for support staff — order/customer/product lookup, sales by region & category, embedded Genie chat |
 
@@ -97,14 +97,14 @@ flowchart TB
 Every glossary Page carries **definition · how it's calculated (exact `MEASURE()`/column) · where it lives (MV + grain) · benchmarks · the questions it answers · related terms**. Built by `setup/03_domains_setup.py` into a bulk-import file; the Genie space snippets in `setup/02_genie_setup.py` mirror the same definitions.
 
 <details>
-<summary><b>The 30-term glossary, by domain</b></summary>
+<summary><b>The 27-term glossary, by domain</b></summary>
 
 | Subdomain | Glossary terms |
 |---|---|
-| **Sales Performance** | Gross Revenue · Net Revenue · Average Order Value · Order Count · Units Sold · Total Discount · Sales Channel · New vs Returning Customer · Revenue per Customer · Q4 Seasonal Peak |
+| **Sales Performance** | Gross Revenue · Net Revenue · Average Order Value · Order Count · Units Sold · Sales Channel · New vs Returning Customer · Revenue per Customer · Q4 Seasonal Peak |
 | **Customer Analytics** | Customer Lifetime Value · CLV Segment · Loyalty Tier · Repeat Purchase Rate · Acquisition Channel · Customer Type (B2C/B2B) · Demographic Segments |
 | **Returns & Quality** | Return Rate · Faulty Batch (FAULT-PHON-\*) · Q4 2025 Return Spike · Return Reason · Total Refund Amount · Avg Days to Return · Cancellation Rate · DQ Quarantine |
-| **Cross-domain** | Region & Country Hierarchy · Product Category Taxonomy · Fiscal Calendar · PII Masking & GDPR · Medallion Layers |
+| **Cross-domain** | Region & Country Hierarchy · Product Category Taxonomy · PII Masking & GDPR |
 
 </details>
 
@@ -176,7 +176,7 @@ erDiagram
 | `metrics_customer_kpis` | `mv_customer_demo_sales` | age, income, loyalty, acquisition, B2C/B2B | Revenue, Repeat Purchase Rate, Revenue per Customer |
 | `metrics_product_kpis` | `gold_return_analysis` | category, return reason, faulty batch | Return Rate, Total Refund, Avg Days to Return |
 
-Measures use `MEASURE()`; stored columns (Net Revenue, Units Sold, Cancellation Rate) use `SUM()`/`AVG()`. Plus 3 UC MVs: `mv_category_revenue`, `mv_customer_demo_sales`, `mv_regional_orders`.
+All 3 metric views and 3 MVs are **certified** (see [Governance](#governance)). Measures use `MEASURE()`; stored columns (Net Revenue, Units Sold, Cancellation Rate) use `SUM()`/`AVG()`. Plus 3 UC MVs: `mv_category_revenue`, `mv_customer_demo_sales`, `mv_regional_orders`.
 
 ---
 
@@ -192,7 +192,8 @@ Measures use `MEASURE()`; stored columns (Net Revenue, Units Sold, Cancellation 
 ```
 
 - **PII column masks** on `silver_dim_customers` — non-owner sees `G***`, `***@domain.com`, `***-***-1234`, year-only DOB; the catalog owner sees raw values (GDPR data-minimisation).
-- **UC tags** on every table/column — `quality_tier`, `domain`, `contains_pii`, `pii_classification`, `regulatory`, `data_product`, plus the governed **domain tags** (`online_retail` + 3 subdomains) that bind tables to Discover domains.
+- **UC tags** on every table/column — `quality_tier`, `domain`, `contains_pii`, `pii_classification`, `regulatory`, `data_product`, plus the governed **domain tags** (`online_retail` + 3 subdomains) that bind tables to Discover domains. Every `online_retail_*` table carries the parent tag; DQ tables (`silver_dq_quarantine`, `silver_dq_summary`, the 8 per-entity quarantine MVs) also join `online_retail/returns_quality`. Bronze/silver internals without a subdomain are parent-only.
+- **Certification** — governance step 9 sets `system.certification_status = certified` on all 9 gold MVs, the 3 `mv_*` MVs and the 3 `metrics_*_kpis` metric views. It runs last because `CREATE OR REPLACE` drops tags; the runner needs `APPLY TAG` and permission to assign the system tag.
 - **Comments** — grain, measures, DQ notes, and lineage on every table; mask rule + GDPR basis on every PII column.
 
 ---
@@ -206,17 +207,28 @@ cp databricks.local.yml.example databricks.local.yml
 # edit: host, profile, catalog (must exist), warehouse_id, owner_user (gets unmasked PII)
 ```
 
+**Schema names** are bundle variables with defaults, so you normally set nothing:
+
+| Variable | Default | Used by |
+|---|---|---|
+| `gold_schema` | `online_retail_gold` | Genie setup job (`02_genie_setup.py`), Support Console app (env + `SELECT` grants on the 9 gold MVs) |
+| `metrics_schema` | `online_retail_metrics` | Genie setup job (data sources), Support Console app (env + `SELECT` grants on the 3 metric views + 3 MVs) |
+
+Override either in `databricks.local.yml` under `variables:`. They are passed to **every** consumer — the pipeline (`gold_layer.py` via pipeline config), `01_generate_raw_data.py`, `governance/run_governance.py` (objects, tags, grants, certification), `02_genie_setup.py` (sources, example SQL, instructions), `03_domains_setup.py` (domain discovery, Pages FQNs, Volume path) and the app — so one override renames the gold/metrics layers consistently. The bronze, silver and raw schema names are still fixed (`online_retail_bronze`, `online_retail_silver`, `online_retail_raw`). `governance/*.sql` are reference-only DDL and hardcode names; the deployed path is `run_governance.py`.
+
 | # | Command | Creates | ~Time |
 |---|---|---|---|
 | 1 | `databricks bundle deploy -t dev` | pipeline + 5 jobs + app, uploads notebooks | ~1 min |
 | 2 | `databricks bundle run nexus_retail_generate_data -t dev` | 20 raw Parquet tables (~15K rows) | ~20 min |
 | 3 | `databricks bundle run nexus_retail_pipeline -t dev` | 35 Delta tables + 139-record quarantine | ~3 min |
-| 4 | `databricks bundle run nexus_retail_governance -t dev` | masks, tags, comments, metric views, **domain tags** | ~2 min |
+| 4 | `databricks bundle run nexus_retail_governance -t dev` | masks, tags, comments, metric views, **domain tags**, **certification** | ~2 min |
 | 5 | `databricks bundle run nexus_retail_genie_setup -t dev` | Genie space + snippets + example SQL | ~1 min |
 | 6 | `databricks bundle run nexus_retail_domains -t dev` | domains + **glossary Pages** bulk-import file | ~1 min |
 | 7 | `(cd app/frontend && npm install && npm run build)` then `databricks bundle deploy -t dev && databricks bundle run nexus_retail_support_app -t dev` | **Support Console** Databricks App (needs `genie_space_id` from Step 5 in `databricks.local.yml`) | ~4 min |
 
 **After Step 6:** open **Discover ▸ Pages ▸ Create page ▸ Genie Code ▸ Bulk import pages**, attach the generated `nexus_retail_pages.md`, review, and **Publish** — published Pages become authoritative context Genie prioritises and cites.
+
+Each Page lists its backing assets as `@catalog.schema.table` lines under **Related assets**; the file instructs Genie Code to attach each one. FQNs come from `information_schema` (not name prefixes), so e.g. quarantine tables resolve to the silver schema. Table Pages are generated only for silver, gold and metrics objects — bronze tables and the per-entity `*_quarantine` MVs are covered by the `silver_dq_quarantine` Page. Re-importing does not update already-published Pages: delete the old ones first.
 
 <details>
 <summary><b>Prerequisites & gotchas</b></summary>
@@ -243,6 +255,8 @@ cp databricks.local.yml.example databricks.local.yml
 | App loads but shows a blank page | the SPA wasn't built — `(cd app/frontend && npm run build)`, then deploy + `bundle run nexus_retail_support_app` |
 | App page shows `PERMISSION_DENIED` / table not found | a table the app reads is missing from the app's `uc_securable` resources, or the pipeline hasn't created the 3 Support Console gold views yet (re-run Step 3) |
 | Genie chat errors in the app | the app's service principal needs `CAN_RUN` on the space (bundle resource) **and** `SELECT` on every table in the space — add new space tables to the app resources |
+| Gold/metrics objects not showing **Certified** | governance step 9 warned — runner lacks `APPLY TAG` / system-tag assign permission; grant it and re-run Step 4 |
+| Imported Pages show no Related assets | check the Pages file lists `@catalog.schema.table` under **Related assets** and the script printed no "reference assets with no comment" warning; re-run Step 6 |
 | Pages have no "create" API | use the generated bulk-import file (Discover ▸ Pages ▸ Genie Code) |
 
 </details>
@@ -321,7 +335,7 @@ DQ_UC_Ontology/
 └── setup/
     ├── 01_generate_raw_data.py     # 20 Parquet tables via Spark + Faker
     ├── 02_genie_setup.py           # ★ Genie space, snippets, example SQL
-    └── 03_domains_setup.py         # ★ Discover domains + 30-term glossary Pages file
+    └── 03_domains_setup.py         # ★ Discover domains + 27-term glossary Pages file
 └── app/                            # ★ Support Console (Databricks App)
     ├── requirements.txt
     ├── backend/                    # FastAPI: main.py (routes) · queries.py (all SQL) · genie.py · db.py

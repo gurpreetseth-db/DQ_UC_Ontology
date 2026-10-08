@@ -74,6 +74,8 @@ resources:
             path: ./src/gold_layer.py
       configuration:
         catalog: ${var.catalog}
+        gold_schema: ${var.gold_schema}
+        metrics_schema: ${var.metrics_schema}
         pipeline.env: ${bundle.target}
         # Path to the DQX rules YAML (synced with the bundle). Read in
         # src/silver_layer.py via spark.conf.get("dqx.rules_path"). The
@@ -90,6 +92,8 @@ resources:
             notebook_path: ./setup/01_generate_raw_data.py
             base_parameters:
               catalog: ${var.catalog}
+              gold_schema: ${var.gold_schema}
+              metrics_schema: ${var.metrics_schema}
           environment_key: serverless
       environments:
         - environment_key: serverless
@@ -110,6 +114,8 @@ resources:
               catalog:      ${var.catalog}
               warehouse_id: ${var.warehouse_id}
               owner_user:   ${var.owner_user}
+              gold_schema:  ${var.gold_schema}
+              metrics_schema: ${var.metrics_schema}
           environment_key: serverless
       environments:
         - environment_key: serverless
@@ -143,6 +149,8 @@ resources:
               catalog:      ${var.catalog}
               warehouse_id: ${var.warehouse_id}
               owner_user:   ${var.owner_user}
+              gold_schema:  ${var.gold_schema}
+              metrics_schema: ${var.metrics_schema}
           environment_key: serverless
       environments:
         - environment_key: serverless

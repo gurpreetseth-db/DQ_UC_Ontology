@@ -1,6 +1,6 @@
 """NexusRetail Support Console backend: FastAPI JSON API + static SPA hosting.
 
-Reads only the online_retail_gold and online_retail_metrics schemas and proxies
+Reads only the configured gold and metrics schemas and proxies
 the NexusRetail Analytics Genie space.
 """
 from __future__ import annotations

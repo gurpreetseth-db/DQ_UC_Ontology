@@ -10,7 +10,7 @@ export default function Sales() {
   const { filters } = useFilters();
   const q = useQuery({ queryKey: ["sales", filters], queryFn: () => api.sales(filters) });
   return (
-    <Page title="Sales & revenue" subtitle="Revenue by product category, region and month — from the certified online_retail_metrics layer.">
+    <Page title="Sales & revenue" subtitle="Revenue by product category, region and month — from the certified metrics layer.">
       <FilterBar />
       <Async q={q}>{(d) => <SalesBody d={d} />}</Async>
     </Page>

@@ -24,10 +24,14 @@ def _get(param: str, default: str = "") -> str:
 dbutils.widgets.text("catalog",      "your_catalog_name")
 dbutils.widgets.text("warehouse_id", "your_warehouse_id")
 dbutils.widgets.text("owner_user",   "your.email@company.com")
+dbutils.widgets.text("gold_schema",     "online_retail_gold")
+dbutils.widgets.text("metrics_schema",  "online_retail_metrics")
 
 CATALOG      = _get("catalog")
 WAREHOUSE_ID = _get("warehouse_id")
 OWNER_USER   = _get("owner_user")
+GOLD_SCHEMA    = _get("gold_schema",    "online_retail_gold")
+METRICS_SCHEMA = _get("metrics_schema", "online_retail_metrics")
 
 if any("your_" in v or "your." in v for v in [CATALOG, WAREHOUSE_ID, OWNER_USER]):
     raise ValueError(
@@ -150,8 +154,8 @@ CATALOG_COMMENT = f"""
 NexusRetail Analytics Platform — primary demo catalog.
 Contains domain schemas for agriculture ops and the NexusRetail online retail demo.
 Online retail schemas: online_retail_raw (source), online_retail_bronze (ingest),
-online_retail_silver (cleansed, PII masked), online_retail_gold (aggregated),
-online_retail_metrics (semantic layer).
+online_retail_silver (cleansed, PII masked), {GOLD_SCHEMA} (aggregated),
+{METRICS_SCHEMA} (semantic layer).
 Owner: {OWNER_USER}
 """.strip().replace("\n", " ")
 
@@ -171,13 +175,13 @@ SCHEMA_COMMENTS = {
         "Only the catalog owner sees raw PII values. "
         "silver_dq_quarantine captures 139 records failing critical checks. "
         "Quality tier: silver. Regulatory: GDPR-aligned column masks applied.",
-    f"{C}.online_retail_gold":
+    f"{C}.{GOLD_SCHEMA}":
         "NexusRetail gold layer — 6 business-ready Materialized View aggregations. "
         "No PII — customer data aggregated by segment/bracket only. "
         "Tables: category_sales, customer_segment_sales, regional_performance, "
         "customer_lifetime_value, return_analysis, daily_revenue. "
         "Quality tier: gold. Owner: analytics.",
-    f"{C}.online_retail_metrics":
+    f"{C}.{METRICS_SCHEMA}":
         "NexusRetail semantic/metrics layer — 3 UC Materialized Views and 3 Metric Views "
         "(WITH METRICS LANGUAGE YAML). Genie One data sources. No PII. "
         "Metric views: metrics_sales_kpis, metrics_customer_kpis, metrics_product_kpis. "
@@ -218,7 +222,7 @@ SCHEMA_TAGS = {
         "owner":         "data_engineering",
         "genie_ready":   "false",
     },
-    f"`{C}`.online_retail_gold": {
+    f"`{C}`.{GOLD_SCHEMA}": {
         "quality_tier":  "gold",
         "data_layer":    "gold",
         "data_domain":   "online_retail",
@@ -227,7 +231,7 @@ SCHEMA_TAGS = {
         "owner":         "analytics",
         "genie_ready":   "true",
     },
-    f"`{C}`.online_retail_metrics": {
+    f"`{C}`.{METRICS_SCHEMA}": {
         "quality_tier":  "gold",
         "data_layer":    "semantic",
         "data_domain":   "online_retail",
@@ -675,7 +679,7 @@ TABLE_METADATA = {
     },
 
     # ── GOLD ─────────────────────────────────────────────────────────────────
-    f"`{C}`.online_retail_gold.gold_category_sales": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_category_sales": {
         "comment":
             "Category-level revenue aggregation by subcategory, region, and month. "
             "All dimension columns retained for full dashboard slice-and-dice flexibility. "
@@ -685,7 +689,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "product", "owner": "analytics",
                  "grain": "category_subcategory_region_month", "data_product": "nexus_retail"},
     },
-    f"`{C}`.online_retail_gold.gold_customer_segment_sales": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_customer_segment_sales": {
         "comment":
             "Customer demographic segment revenue breakdown. "
             "Dimensions: age_bracket × income_bracket × loyalty_tier × acquisition_channel × region × month. "
@@ -695,7 +699,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "customer", "owner": "analytics",
                  "grain": "segment_region_month", "data_product": "nexus_retail"},
     },
-    f"`{C}`.online_retail_gold.gold_regional_performance": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_regional_performance": {
         "comment":
             "Regional performance dashboard: revenue, orders, returns, net revenue by country and month. "
             "APAC-East (REG-005) shows elevated return_rate_pct in Q4 2025 (faulty batch impact). "
@@ -705,7 +709,7 @@ TABLE_METADATA = {
                  "key_story": "apac_east_return_spike", "grain": "region_country_month",
                  "data_product": "nexus_retail"},
     },
-    f"`{C}`.online_retail_gold.gold_customer_lifetime_value": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_customer_lifetime_value": {
         "comment":
             "Customer-level CLV summary — one row per customer with full purchase history aggregated. "
             "clv_segment: High (total_revenue >= $1000 or Platinum) | Medium ($200-999) | Low (<$200) | Churned (180+ days inactive). "
@@ -715,7 +719,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "customer", "owner": "analytics",
                  "grain": "customer_id", "data_product": "nexus_retail"},
     },
-    f"`{C}`.online_retail_gold.gold_return_analysis": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_return_analysis": {
         "comment":
             "Return analysis by product × reason code × week. "
             "faulty_batch=TRUE products (FAULT-PHON-*) show return_rate_pct > 40% in Q4 2025 "
@@ -726,7 +730,7 @@ TABLE_METADATA = {
                  "key_story": "faulty_batch_return_anomaly", "grain": "product_reason_week",
                  "data_product": "nexus_retail"},
     },
-    f"`{C}`.online_retail_gold.gold_daily_revenue": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_daily_revenue": {
         "comment":
             "Daily revenue by channel and region — backbone for the AI/BI time-series dashboard. "
             "new_customers = customers placing their first-ever order on this date. "
@@ -736,21 +740,21 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
                  "grain": "date_channel_region", "data_product": "nexus_retail"},
     },
-    f"`{C}`.online_retail_gold.gold_order_details": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_order_details": {
         "comment":
             "Order-level detail for the Support Console: status, delivery ETA, invoice status/overdue, "
             "and return/refund outcome. No PII — customer_id only. Grain: order_id.",
         "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
                  "grain": "order_id", "data_product": "nexus_retail", "consumer": "support_console"},
     },
-    f"`{C}`.online_retail_gold.gold_order_lines": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_order_lines": {
         "comment":
             "Order line items with product name, SKU, category and faulty-batch flag. "
             "Used by the Support Console to show order contents. Grain: line_id.",
         "tags": {"quality_tier": "gold", "domain": "transaction", "owner": "analytics",
                  "grain": "line_id", "data_product": "nexus_retail", "consumer": "support_console"},
     },
-    f"`{C}`.online_retail_gold.gold_product_catalog": {
+    f"`{C}`.{GOLD_SCHEMA}.gold_product_catalog": {
         "comment":
             "Full product catalog (incl. never-returned products) with lifetime units sold, revenue, "
             "returns and return_rate_pct. Grain: product_id.",
@@ -759,7 +763,7 @@ TABLE_METADATA = {
     },
 
     # ── METRICS ──────────────────────────────────────────────────────────────
-    f"`{C}`.online_retail_metrics.mv_category_revenue": {
+    f"`{C}`.{METRICS_SCHEMA}.mv_category_revenue": {
         "comment":
             "Pre-aggregated category revenue Materialized View. "
             "Source: gold_category_sales — aggregated by category × subcategory × region × month. "
@@ -768,7 +772,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "product", "genie_page": "sales_performance",
                  "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "sales_performance", "table_type": "fact"},
     },
-    f"`{C}`.online_retail_metrics.mv_customer_demo_sales": {
+    f"`{C}`.{METRICS_SCHEMA}.mv_customer_demo_sales": {
         "comment":
             "Pre-aggregated customer demographic sales Materialized View. "
             "Source: gold_customer_segment_sales — aggregated by age_bracket × income_bracket × loyalty_tier × region × month. "
@@ -777,7 +781,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "customer", "genie_page": "customer_analytics",
                  "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "customer_analytics", "table_type": "fact"},
     },
-    f"`{C}`.online_retail_metrics.mv_regional_orders": {
+    f"`{C}`.{METRICS_SCHEMA}.mv_regional_orders": {
         "comment":
             "Pre-aggregated regional order and return performance Materialized View. "
             "Source: gold_regional_performance. Shows APAC-East Q4 2025 return spike. "
@@ -786,7 +790,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "geography", "genie_page": "returns_quality",
                  "key_story": "apac_east_return_spike", "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "returns_quality", "table_type": "fact"},
     },
-    f"`{C}`.online_retail_metrics.metrics_sales_kpis": {
+    f"`{C}`.{METRICS_SCHEMA}.metrics_sales_kpis": {
         "comment":
             "Sales KPI Metric View (WITH METRICS LANGUAGE YAML). "
             "Source: gold_daily_revenue. Dimensions: Sale Month, Sale Quarter, Channel, Region, Super Region. "
@@ -795,7 +799,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "transaction", "semantic_layer": "metric_view",
                  "genie_page": "sales_performance", "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "sales_performance", "table_type": "semantic"},
     },
-    f"`{C}`.online_retail_metrics.metrics_customer_kpis": {
+    f"`{C}`.{METRICS_SCHEMA}.metrics_customer_kpis": {
         "comment":
             "Customer KPI Metric View (WITH METRICS LANGUAGE YAML). "
             "Source: mv_customer_demo_sales. Dimensions: Age Bracket, Income Bracket, Loyalty Tier, Acquisition Channel, Region, Month. "
@@ -804,7 +808,7 @@ TABLE_METADATA = {
         "tags": {"quality_tier": "gold", "domain": "customer", "semantic_layer": "metric_view",
                  "genie_page": "customer_analytics", "data_product": "nexus_retail", "owner": "analytics", "genie_domain": "customer_analytics", "table_type": "semantic"},
     },
-    f"`{C}`.online_retail_metrics.metrics_product_kpis": {
+    f"`{C}`.{METRICS_SCHEMA}.metrics_product_kpis": {
         "comment":
             "Product/Returns KPI Metric View (WITH METRICS LANGUAGE YAML). "
             "Source: gold_return_analysis. Dimensions: Category, Subcategory, Return Reason, Faulty Batch, Return Month. "
@@ -975,16 +979,16 @@ ALTER TABLE `{C}`.online_retail_silver.silver_dim_customers
 
     # 3. Create metrics schema objects (UC MVs + Metric Views)
     #    Must run BEFORE table comments/tags — can't tag tables that don't exist yet.
-    print("\n3. Creating online_retail_metrics objects...")
+    print(f"\n3. Creating {METRICS_SCHEMA} objects...")
     # CREATE OR REPLACE drops grants on views, so capture them first and
     # restore once the objects are rebuilt (see restore_grants below).
-    metrics_objects = [f"`{C}`.online_retail_metrics.{n}" for n in (
+    metrics_objects = [f"`{C}`.{METRICS_SCHEMA}.{n}" for n in (
         "mv_category_revenue", "mv_customer_demo_sales", "mv_regional_orders",
         "metrics_sales_kpis", "metrics_customer_kpis", "metrics_product_kpis")]
     metrics_grants = snapshot_grants(metrics_objects)
 
     sql("mv_category_revenue", f"""
-CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_category_revenue
+CREATE OR REPLACE MATERIALIZED VIEW `{C}`.{METRICS_SCHEMA}.mv_category_revenue
 COMMENT 'Pre-aggregated category revenue with return rates. Refreshed on pipeline run.
 Source for Genie Sales Performance page. Grain: category x subcategory x region x month.'
 TBLPROPERTIES ('quality_tier'='gold','domain'='product','genie_page'='sales_performance','data_product'='nexus_retail')
@@ -996,12 +1000,12 @@ SELECT category_id, category_name, subcategory_name, region_name, super_region, 
   SUM(refund_total) AS refund_total,
   ROUND(AVG(return_rate_pct),2) AS avg_return_rate_pct,
   MAX(contains_faulty_products) AS contains_faulty_products
-FROM `{C}`.online_retail_gold.gold_category_sales
+FROM `{C}`.{GOLD_SCHEMA}.gold_category_sales
 GROUP BY category_id, category_name, subcategory_name, region_name, super_region, sale_month
 """)
 
     sql("mv_customer_demo_sales", f"""
-CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_customer_demo_sales
+CREATE OR REPLACE MATERIALIZED VIEW `{C}`.{METRICS_SCHEMA}.mv_customer_demo_sales
 COMMENT 'Pre-aggregated customer demographic sales. Refreshed on pipeline run.
 Source for Genie Customer Analytics page. Grain: age_bracket x income_bracket x loyalty_tier x region x month.'
 TBLPROPERTIES ('quality_tier'='gold','domain'='customer','genie_page'='customer_analytics','data_product'='nexus_retail')
@@ -1013,13 +1017,13 @@ SELECT age_bracket, income_bracket, loyalty_tier, acquisition_channel, customer_
   SUM(repeat_customers) AS repeat_customers,
   ROUND(AVG(repeat_purchase_rate_pct),2) AS avg_repeat_rate_pct,
   ROUND(AVG(revenue_per_customer),2) AS avg_revenue_per_customer
-FROM `{C}`.online_retail_gold.gold_customer_segment_sales
+FROM `{C}`.{GOLD_SCHEMA}.gold_customer_segment_sales
 GROUP BY age_bracket, income_bracket, loyalty_tier, acquisition_channel, customer_type,
          region_name, super_region, sale_month
 """)
 
     sql("mv_regional_orders", f"""
-CREATE OR REPLACE MATERIALIZED VIEW `{C}`.online_retail_metrics.mv_regional_orders
+CREATE OR REPLACE MATERIALIZED VIEW `{C}`.{METRICS_SCHEMA}.mv_regional_orders
 COMMENT 'Pre-aggregated regional order and return performance. Refreshed on pipeline run.
 Shows APAC-East Q4 2025 return spike. Source for Genie Returns and Quality page.
 Grain: region x country x month.'
@@ -1034,7 +1038,7 @@ SELECT region_id, region_name, super_region, country_code, country_name, regiona
   ROUND(AVG(avg_order_value),2) AS avg_order_value,
   SUM(cancelled_orders) AS cancelled_orders,
   ROUND(AVG(cancellation_rate_pct),2) AS cancellation_rate_pct
-FROM `{C}`.online_retail_gold.gold_regional_performance
+FROM `{C}`.{GOLD_SCHEMA}.gold_regional_performance
 GROUP BY region_id, region_name, super_region, country_code, country_name, regional_currency, sale_month
 """)
 
@@ -1061,14 +1065,14 @@ GROUP BY region_id, region_name, super_region, country_code, country_name, regio
             print(f"  ✗  {label}  {str(e)[:120]}"); return False
 
     _sql_async("metrics_sales_kpis", f"""
-CREATE OR REPLACE VIEW `{C}`.online_retail_metrics.metrics_sales_kpis
+CREATE OR REPLACE VIEW `{C}`.{METRICS_SCHEMA}.metrics_sales_kpis
   WITH METRICS LANGUAGE YAML
   COMMENT 'NexusRetail Sales KPIs. Dimensions: Sale Month, Sale Quarter, Channel, Region, Super Region.
 Measures: Gross Revenue, Order Count, Avg Order Value, Unique Customers, New Customers, Returning Customers.
 Use MEASURE() function. Genie: Sales Performance page.'
 AS $$
   version: 1.1
-  source: {C}.online_retail_gold.gold_daily_revenue
+  source: {C}.{GOLD_SCHEMA}.gold_daily_revenue
   dimensions:
     - name: Sale Month
       expr: DATE_TRUNC('MONTH', sale_date)
@@ -1103,14 +1107,14 @@ AS $$
 $$""")
 
     _sql_async("metrics_customer_kpis", f"""
-CREATE OR REPLACE VIEW `{C}`.online_retail_metrics.metrics_customer_kpis
+CREATE OR REPLACE VIEW `{C}`.{METRICS_SCHEMA}.metrics_customer_kpis
   WITH METRICS LANGUAGE YAML
   COMMENT 'NexusRetail Customer KPIs. Dimensions: Age Bracket, Income Bracket, Loyalty Tier, Acquisition Channel, Region, Month.
 Measures: Revenue, Customer Count, Avg Order Value, Repeat Purchase Rate.
 Use MEASURE() function. Genie: Customer Analytics page.'
 AS $$
   version: 1.1
-  source: {C}.online_retail_metrics.mv_customer_demo_sales
+  source: {C}.{METRICS_SCHEMA}.mv_customer_demo_sales
   dimensions:
     - name: Age Bracket
       expr: age_bracket
@@ -1139,7 +1143,7 @@ AS $$
 $$""")
 
     _sql_async("metrics_product_kpis", f"""
-CREATE OR REPLACE VIEW `{C}`.online_retail_metrics.metrics_product_kpis
+CREATE OR REPLACE VIEW `{C}`.{METRICS_SCHEMA}.metrics_product_kpis
   WITH METRICS LANGUAGE YAML
   COMMENT 'NexusRetail Product/Returns KPIs. FAULT-PHON-* return_rate exceeds 40%% in Q4 2025.
 Dimensions: Category, Subcategory, Return Reason, Faulty Batch, Return Month.
@@ -1147,7 +1151,7 @@ Measures: Return Count, Total Refund, Return Rate.
 Use MEASURE() function. Genie: Returns and Quality page.'
 AS $$
   version: 1.1
-  source: {C}.online_retail_gold.gold_return_analysis
+  source: {C}.{GOLD_SCHEMA}.gold_return_analysis
   dimensions:
     - name: Category
       expr: category_name
@@ -1203,7 +1207,7 @@ $$""")
 
         # Apply column comments (Streaming Tables only)
         schema = full_name.split(".")[1].strip("`")
-        is_mv = (schema in ("online_retail_gold", "online_retail_metrics"))
+        is_mv = (schema in (GOLD_SCHEMA, METRICS_SCHEMA))
         if not is_mv and meta.get("columns"):
             for col_name, col_comment_text in meta["columns"].items():
                 comment_escaped = col_comment_text.replace("'", "\\'")
@@ -1221,11 +1225,11 @@ $$""")
         f"GRANT USE CATALOG ON CATALOG `{C}` TO `{OWNER_USER}`",
         f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_bronze TO `{OWNER_USER}`",
         f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_silver TO `{OWNER_USER}`",
-        f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_gold TO `{OWNER_USER}`",
-        f"GRANT USE SCHEMA ON SCHEMA `{C}`.online_retail_metrics TO `{OWNER_USER}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{C}`.{GOLD_SCHEMA} TO `{OWNER_USER}`",
+        f"GRANT USE SCHEMA ON SCHEMA `{C}`.{METRICS_SCHEMA} TO `{OWNER_USER}`",
         f"GRANT SELECT ON SCHEMA `{C}`.online_retail_silver TO `{OWNER_USER}`",
-        f"GRANT SELECT ON SCHEMA `{C}`.online_retail_gold TO `{OWNER_USER}`",
-        f"GRANT SELECT ON SCHEMA `{C}`.online_retail_metrics TO `{OWNER_USER}`",
+        f"GRANT SELECT ON SCHEMA `{C}`.{GOLD_SCHEMA} TO `{OWNER_USER}`",
+        f"GRANT SELECT ON SCHEMA `{C}`.{METRICS_SCHEMA} TO `{OWNER_USER}`",
     ]:
         sql(f"grant {stmt.split('ON')[1].strip()[:50]}", stmt, allow_fail=True)
 
@@ -1258,7 +1262,7 @@ $$""")
     #    be applied after the objects are (re)created. Uses the UC system governed
     #    tag, which surfaces the "Certified" badge in Catalog Explorer / Discover.
     print("\n9. Certifying gold and metrics objects...")
-    CERTIFIED_SCHEMAS = ("online_retail_gold", "online_retail_metrics")
+    CERTIFIED_SCHEMAS = (GOLD_SCHEMA, METRICS_SCHEMA)
     for full_name in TABLE_METADATA:
         if full_name.split(".")[1].strip("`") in CERTIFIED_SCHEMAS:
             apply_tags("TABLE", full_name, {"system.certification_status": "certified"})

@@ -25,6 +25,10 @@ import math
 # The widget default is a fallback for manual notebook runs only.
 dbutils.widgets.text("catalog", "your_catalog_name")
 CATALOG       = dbutils.widgets.get("catalog")
+dbutils.widgets.text("gold_schema", "online_retail_gold")
+dbutils.widgets.text("metrics_schema", "online_retail_metrics")
+GOLD_SCHEMA    = dbutils.widgets.get("gold_schema")
+METRICS_SCHEMA = dbutils.widgets.get("metrics_schema")
 RAW_SCHEMA    = "online_retail_raw"
 VOLUME        = "raw_data"
 BASE_PATH     = f"/Volumes/{CATALOG}/{RAW_SCHEMA}/{VOLUME}"
@@ -63,9 +67,9 @@ ALL_SCHEMAS = {
     f"`{CATALOG}`.`online_retail_silver`":
         "NexusRetail silver layer — cleansed, DQX-validated streaming tables. "
         "PII masked via UC column masks. Quarantine table captures quality violations.",
-    f"`{CATALOG}`.`online_retail_gold`":
+    f"`{CATALOG}`.`{GOLD_SCHEMA}`":
         "NexusRetail gold layer — business-ready Materialized View aggregations. No PII.",
-    f"`{CATALOG}`.`online_retail_metrics`":
+    f"`{CATALOG}`.`{METRICS_SCHEMA}`":
         "NexusRetail semantic/metrics layer — UC Materialized Views and Metric Views "
         "(WITH METRICS LANGUAGE YAML). Genie One data sources. No PII.",
 }
