@@ -664,6 +664,16 @@ TABLE_METADATA = {
                  "data_product": "nexus_retail", "owner": "data_engineering", "genie_domain": "all", "table_type": "quality"},
     },
 
+    f"`{C}`.online_retail_silver.silver_dq_summary": {
+        "comment":
+            "DQX quality rollup: failing-record counts per (source_table, dq_rule, severity) "
+            "over silver_dq_quarantine, with last_evaluated_at. Drives DQ dashboards and "
+            "alerts. Query this first for a data-health overview, then drill into the "
+            "per-entity <source_table>_quarantine tables.",
+        "tags": {"quality_tier": "silver", "domain": "data_quality", "data_product": "nexus_retail",
+                 "owner": "data_engineering", "genie_domain": "all", "table_type": "quality"},
+    },
+
     # ── GOLD ─────────────────────────────────────────────────────────────────
     f"`{C}`.online_retail_gold.gold_category_sales": {
         "comment":
@@ -891,7 +901,14 @@ GOLD_GENIE_DOMAIN = {
     "gold_order_details":           "sales_performance",
     "gold_order_lines":             "sales_performance",
     "gold_product_catalog":         "returns_quality",
+    # Data-quality tables are genie_domain='all' but back the "DQ Quarantine" page and
+    # the Returns & Quality charter, so they join that subdomain as well as the parent.
+    "silver_dq_quarantine":         "returns_quality",
+    "silver_dq_summary":            "returns_quality",
 }
+# Per-entity <source_table>_quarantine MVs roll up into silver_dq_quarantine.
+GOLD_GENIE_DOMAIN.update({f"{_src}_quarantine": "returns_quality"
+                          for _src, _pk in _QUARANTINE_ENTITIES.values()})
 
 def _subdomain_tag_for(full_name: str, meta: dict):
     """Return the subdomain governed tag for a table, or None (parent-only, e.g.

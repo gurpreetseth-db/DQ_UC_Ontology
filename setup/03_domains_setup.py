@@ -316,20 +316,6 @@ CURATED_PAGES = [
         "sources": ["mv_category_revenue", "gold_category_sales"],
     },
     {
-        "name": "Total Discount", "domain": f"{PARENT_TAG}/sales_performance",
-        "synonyms": ["discount", "markdown", "promotional discount", "price reduction"],
-        "definition": "The aggregate dollar value of discounts applied at the order line — the gap between list price and what customers actually paid.",
-        "calculation": "`SUM(total_discount)`, where line discount = `unit_price × quantity × discount_pct/100`. Stored column.",
-        "lives_in": "`mv_category_revenue.total_discount` / `gold_category_sales.total_discount` (category × region × month).",
-        "use_cases": [
-            "How much did we give away in discounts by category in 2025?",
-            "Which region carries the deepest discounts?",
-            "Is discount depth growing quarter over quarter?",
-        ],
-        "related": ["Gross Revenue", "Units Sold", "Average Order Value"],
-        "sources": ["mv_category_revenue", "gold_category_sales"],
-    },
-    {
         "name": "Sales Channel", "domain": f"{PARENT_TAG}/sales_performance",
         "synonyms": ["channel", "order channel", "sales channel", "web mobile partner"],
         "definition": "The route an order was placed through: web, mobile, or partner_api.",
@@ -399,7 +385,7 @@ CURATED_PAGES = [
             "Compare Q4 2025 vs Q4 2024 revenue by region.",
             "Which quarter has the highest order volume?",
         ],
-        "related": ["Gross Revenue", "Order Count", "Fiscal Calendar & Time Grain", "Q4 2025 Return Spike"],
+        "related": ["Gross Revenue", "Order Count", "Q4 2025 Return Spike"],
         "sources": ["metrics_sales_kpis", "gold_daily_revenue"],
     },
 
@@ -681,7 +667,7 @@ CURATED_PAGES = [
             "How many invoices were dropped for NULL totals?",
             "Which data-quality rule caught the most records?",
         ],
-        "related": ["Return Reason", "Faulty Batch (FAULT-PHON-*)", "Medallion Layers"],
+        "related": ["Return Reason", "Faulty Batch (FAULT-PHON-*)"],
         "sources": ["silver_dq_quarantine"],
     },
 
@@ -721,28 +707,6 @@ CURATED_PAGES = [
         "sources": ["silver_dim_products", "mv_category_revenue"],
     },
     {
-        "name": "Fiscal Calendar & Time Grain", "domain": PARENT_TAG,
-        "synonyms": ["fiscal year", "quarter", "time grain", "date", "month week quarter"],
-        "definition": (
-            "Fiscal year = calendar year. The dataset spans 24 months (Sep 2024 - Sep 2026). "
-            "Analyse by day, week, month, or quarter."
-        ),
-        "calculation": (
-            "Time dimensions in `metrics_sales_kpis`: `Sale Date`, `Sale Week` "
-            "(`DATE_TRUNC('WEEK', …)`), `Sale Month`, `Sale Quarter`. Returns use "
-            "`Return Week` / `Return Month` in `metrics_product_kpis`."
-        ),
-        "lives_in": "All metric views expose the appropriate time dimension; `silver_dim_date` is the spine.",
-        "benchmark": "Q4 (Oct-Dec) is the seasonal peak. Story timeline: Q3 2025 faulty ship → Q4 2025 spike → Q1 2026 stabilised.",
-        "use_cases": [
-            "Show the weekly revenue trend for 2025.",
-            "Compare this quarter to the same quarter last year.",
-            "What is the monthly return trend since Q3 2025?",
-        ],
-        "related": ["Q4 Seasonal Peak", "Q4 2025 Return Spike", "Gross Revenue"],
-        "sources": ["metrics_sales_kpis", "gold_daily_revenue"],
-    },
-    {
         "name": "PII Masking & GDPR", "domain": PARENT_TAG,
         "synonyms": ["PII", "column mask", "data masking", "GDPR", "privacy"],
         "definition": "Unity Catalog column masks on `silver_dim_customers` so only the catalog owner sees raw PII.",
@@ -758,29 +722,8 @@ CURATED_PAGES = [
             "Where does unmasked PII live and who can see it?",
             "Is the semantic layer free of PII?",
         ],
-        "related": ["Medallion Layers", "Customer Type (B2C / B2B)"],
+        "related": ["Customer Type (B2C / B2B)"],
         "sources": ["silver_dim_customers"],
-    },
-    {
-        "name": "Medallion Layers", "domain": PARENT_TAG,
-        "synonyms": ["medallion", "bronze silver gold", "data layers", "semantic layer"],
-        "definition": (
-            "The governed data flow: bronze (raw ingest) → silver (cleansed, PII masked, "
-            "DQ-validated) → gold (aggregated, no PII) → metrics (certified semantic layer)."
-        ),
-        "calculation": (
-            "For Genie/analytics, query the **metrics** schema first (metric views + `mv_*`). "
-            "Fall back to **gold** only when the metrics layer lacks the cut. Avoid silver "
-            "for ad-hoc questions."
-        ),
-        "lives_in": "Schemas: online_retail_bronze / _silver / _gold / _metrics.",
-        "use_cases": [
-            "Which tables should I use for revenue questions?",
-            "What is the certified semantic layer?",
-            "Where are the data-quality checks applied?",
-        ],
-        "related": ["DQ Quarantine", "PII Masking & GDPR", "Gross Revenue"],
-        "sources": ["metrics_sales_kpis", "silver_dq_quarantine"],
     },
 ]
 
@@ -915,6 +858,7 @@ except Exception as e:
 
 # table -> comment (the definition each per-table Page leads with)
 comments = {}
+schema_of = {}   # table -> actual schema, so related-asset FQNs are exact
 try:
     rows = run_sql(f"""
         SELECT table_schema, table_name, comment
@@ -926,6 +870,7 @@ try:
         if table.startswith("__materialization"):
             continue
         comments[table] = comment
+        schema_of[table] = schema
     print(f"  ✓  {len(comments)} table comments loaded")
 except Exception as e:
     print(f"  ⚠  could not read comments: {str(e)[:140]}")
@@ -937,7 +882,11 @@ print("\n4. Generating Pages bulk-import file (business glossary)...")
 
 
 def _fqn(short: str) -> str:
-    """Best-effort catalog.schema.table for a short table name, for @-tagging."""
+    """catalog.schema.table for a short table name. Uses the real schema read from
+    information_schema (e.g. bronze_*_quarantine live in silver, not bronze); falls
+    back to the name prefix only for assets that have no comment yet."""
+    if short in schema_of:
+        return f"{CATALOG}.{schema_of[short]}.{short}"
     prefix = short.split("_", 1)[0]  # bronze/silver/gold/mv/metrics
     schema = {
         "bronze": "online_retail_bronze", "silver": "online_retail_silver",
@@ -974,7 +923,9 @@ def _page_md(page: dict) -> str:
     if page.get("related"):
         lines.append("**Related terms:** " + ", ".join(page["related"]))
     if page.get("sources"):
-        lines.append("**Backing assets:** " + ", ".join(f"`{_fqn(s)}`" for s in page["sources"]))
+        # One @-mention per line: each becomes a Related asset on the published Page.
+        lines += ["**Related assets** _(attach each as a Related asset on this Page)_", ""]
+        lines += [f"- @{_fqn(s)}" for s in page["sources"]]
     lines.append("")
     return "\n".join(lines)
 
@@ -984,6 +935,8 @@ md = [
     "",
     "Import into **Discover ▸ Pages ▸ Create page ▸ Genie Code ▸ Bulk import pages**.",
     "Attach this file as a source; Genie Code drafts one Page per section below.",
+    "For EVERY Page, attach each `@catalog.schema.table` listed under its",
+    "**Related assets** heading as a Related asset, and keep the Page in its Domain.",
     "Review, then Publish. Once published, these Pages become authoritative context",
     "Genie One prioritises and cites — each term maps to the exact metric view /",
     "`MEASURE()` / column to answer the natural-language questions it lists.",
@@ -1031,7 +984,23 @@ def _primary_domain(table):
     return PARENT_TAG if PARENT_TAG in tags else "online_retail"
 
 by_domain = {}
-for table, comment in comments.items():
+# Only document layers people actually query: silver/gold/metrics. Bronze is raw
+# ingest and the per-entity *_quarantine MVs are plumbing rolled up by
+# silver_dq_quarantine, so neither earns a Page of its own.
+def _wants_table_page(table):
+    if schema_of.get(table) not in ("online_retail_silver", "online_retail_gold",
+                                    "online_retail_metrics"):
+        return False
+    return not table.endswith("_quarantine") or table == "silver_dq_quarantine"
+
+table_pages = {t: c for t, c in comments.items() if _wants_table_page(t)}
+
+# Fail loudly if a curated Page points at an asset that does not exist.
+_missing = sorted({s for p in CURATED_PAGES for s in p.get("sources", []) if s not in schema_of})
+if _missing:
+    print(f"  ⚠  Pages reference assets with no comment/metadata in UC: {_missing}")
+
+for table, comment in table_pages.items():
     by_domain.setdefault(_primary_domain(table), []).append((table, comment))
 
 for tag in [f"{PARENT_TAG}/sales_performance", f"{PARENT_TAG}/customer_analytics",
@@ -1050,7 +1019,7 @@ for tag in [f"{PARENT_TAG}/sales_performance", f"{PARENT_TAG}/customer_analytics
         }))
 
 pages_md = "\n".join(md)
-print(f"  ✓  built {len(CURATED_PAGES)} concept (glossary) pages + {len(comments)} table pages")
+print(f"  ✓  built {len(CURATED_PAGES)} concept (glossary) pages + {len(table_pages)} table pages")
 
 # COMMAND ----------
 
@@ -1075,7 +1044,7 @@ except Exception as e:
 print(f"\n{'='*64}")
 print("Domains + Pages setup complete.")
 print(f"  Domains  : parent 'Online Retail' + {len(SUBDOMAINS)} subdomains")
-print(f"  Pages    : {len(CURATED_PAGES)} concept (glossary) + {len(comments)} table (bulk-import file)")
+print(f"  Pages    : {len(CURATED_PAGES)} concept (glossary) + {len(table_pages)} table (bulk-import file)")
 if saved:
     print(f"  File     : {OUT_FILE}")
 print(f"  Next     : Discover ▸ Pages ▸ Create page ▸ Genie Code ▸ Bulk import pages")
