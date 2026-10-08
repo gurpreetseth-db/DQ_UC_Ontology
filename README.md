@@ -352,6 +352,59 @@ DQ_UC_Ontology/
 
 ---
 
+## Sample Questions to ask
+**Sales Performance Domain**
+
+    What is our gross revenue vs net revenue this year?
+    Shows ontology distinguishing between MEASURE(Gross Revenue) vs SUM(net_revenue) column
+
+    Show me the Q4 seasonal peak pattern
+    Demonstrates understanding of the "Q4 Seasonal Peak" concept (Oct-Dec, 40-50% higher volumes)
+
+    What is our average order value by channel?
+    Maps "average order value" to the correct MEASURE in metrics_sales_kpis
+
+    How many new vs returning customers do we have?
+    Shows ontology knows these are specific measures in the sales domain
+
+**Customer Analytics Domain**
+
+    Show me customers by CLV segment
+    Demonstrates understanding of CLV Segment definition (High/Medium/Low/Churned with specific thresholds)
+
+    What is the repeat purchase rate by loyalty tier?
+    Maps to MEASURE(Repeat Purchase Rate) in metrics_customer_kpis
+
+    Which acquisition channels have the best customer lifetime value?
+    Shows understanding of both "acquisition channel" dimension and CLV concept
+
+    Show me churned customers
+    Demonstrates knowing "Churned = no order in 180+ days" definition
+
+**Returns & Quality Domain**
+
+    What is our return rate and is it normal?
+    Shows ontology knows normal benchmarks (Electronics 6-8%, Apparel 5-7%, etc.)
+
+    Show me the faulty batch impact?
+    Demonstrates understanding of "Faulty Batch (FAULT-PHON-*)" and Q4 2025 spike story
+
+    What is the average days to return?
+    Maps to specific MEASURE(Avg Days to Return) in metrics_product_kpis
+
+    Show me data quality issues?
+    Demonstrates knowing to query silver_dq_quarantine for DQ problems
+
+**Cross-Domain / Terminology**
+
+    What is our regional performance?
+    Shows understanding of "Region & Country Hierarchy" (7 regions, super-regions, etc.)
+
+    Show me revenue by product category
+    Demonstrates knowing "Product Category Taxonomy" and using mv_category_revenue
+
+    What is our fiscal year performance?
+    Shows understanding that "Fiscal Calendar" = calendar year in this dataset
 ## Tech Stack
 
 Lakeflow SDP (Auto Loader · streaming tables · materialized views · Auto CDC) · `databricks-labs-dqx` + native `@dp.expect*` · Unity Catalog (column masks · tags · comments · Discover domains & Pages) · UC Metric Views · Genie One · Databricks Asset Bundles · Spark + Faker · Delta Lake — all on **Serverless**.
