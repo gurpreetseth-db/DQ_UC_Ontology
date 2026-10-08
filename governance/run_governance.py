@@ -1236,6 +1236,16 @@ $$""")
                 f"ALTER TABLE {full_name} SET TAGS ('{sub}' = '')",
                 allow_fail=True)
 
+    # 9. Certify gold MVs, metrics MVs and metric views
+    #    Runs last: CREATE OR REPLACE in step 3 drops tags, so certification must
+    #    be applied after the objects are (re)created. Uses the UC system governed
+    #    tag, which surfaces the "Certified" badge in Catalog Explorer / Discover.
+    print("\n9. Certifying gold and metrics objects...")
+    CERTIFIED_SCHEMAS = ("online_retail_gold", "online_retail_metrics")
+    for full_name in TABLE_METADATA:
+        if full_name.split(".")[1].strip("`") in CERTIFIED_SCHEMAS:
+            apply_tags("TABLE", full_name, {"system.certification_status": "certified"})
+
     print(f"\n{'='*60}")
     print("Governance setup complete.")
     print(f"  Catalog : https://YOUR-WORKSPACE/#explore/data/{C}")
